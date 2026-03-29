@@ -1,0 +1,29 @@
+feat: KnowCVE v1.0 - Phase 1 + 2 + 3 complete
+
+Phase 1 - FastAPI backend:
+- NVD polling every 15 minutes
+- CISA KEV + EPSS + GitHub PoC enrichment
+- Priority scoring: CVSS(40%) + EPSS(25%) + KEV(20%) + PoC(15%)
+- Multi-provider AI fallback: Groq > Cerebras > Gemini
+- Telegram bot with alert modes (continuous/important/critical)
+- Supabase persistence for CVE history
+- GreyNoise live scanning activity integration
+- REST API: /api/cves, /api/threats, /api/stats, /api/poll
+
+Phase 2 - Next.js 14 dashboard:
+- Dark/light theme toggle
+- Dashboard-first: stats cards + CVE feed
+- CVE detail page with 4-layer AI explanation
+- Attack chain SVG diagram
+- Stats page with manual poll trigger
+
+Phase 3 - Enhancements:
+- Alert modes + pause/resume Telegram commands
+- Recency decay in priority scoring
+- Breaking threats feed (/threats page)
+- Zero-day radar (/zeroday page)
+- Tech stack filter (localStorage)
+- GreyNoise scanner count badges
+- 30-day CVE volume chart
+
+Security: Cleaned Git history of large files

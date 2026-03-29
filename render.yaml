@@ -1,0 +1,21 @@
+# render.yaml — Free Render.com deployment config for KnowCVE
+services:
+  - type: web
+    name: knowcve
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: NVD_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: POLL_INTERVAL_MINUTES
+        value: "15"
+      - key: GROQ_MODEL
+        value: "llama-3.3-70b-versatile"

@@ -1,0 +1,105 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Base resets & theme tokens ─────────────────────── */
+
+@layer base {
+  :root {
+    --bg: 244 245 247;
+    --surface: 255 255 255;
+    --panel: 240 241 243;
+    --border-color: 225 228 232;
+    --muted-color: 208 215 222;
+    --text-primary: 28 33 40;
+    --text-secondary: 87 96 106;
+  }
+
+  .dark {
+    --bg: 8 10 15;
+    --surface: 13 17 23;
+    --panel: 22 27 34;
+    --border-color: 33 38 45;
+    --muted-color: 48 54 61;
+    --text-primary: 230 237 243;
+    --text-secondary: 139 148 158;
+  }
+
+  html {
+    @apply antialiased;
+  }
+
+  body {
+    @apply bg-l-bg text-l-text dark:bg-void dark:text-gray-200;
+    @apply font-sans transition-colors duration-200;
+  }
+
+  /* Scrollbar styling (dark) */
+  .dark ::-webkit-scrollbar {
+    @apply w-2;
+  }
+  .dark ::-webkit-scrollbar-track {
+    @apply bg-void;
+  }
+  .dark ::-webkit-scrollbar-thumb {
+    @apply rounded-full bg-muted;
+  }
+
+  /* Selection color */
+  ::selection {
+    @apply bg-acid/20 text-acid;
+  }
+}
+
+/* ── Component-level utilities ──────────────────────── */
+
+@layer components {
+  .card {
+    @apply rounded-xl border transition-all duration-200;
+    @apply bg-l-surface border-l-border;
+    @apply dark:bg-surface dark:border-border;
+  }
+
+  .card-hover {
+    @apply hover:border-l-muted hover:shadow-md;
+    @apply dark:hover:border-muted dark:hover:shadow-lg dark:hover:shadow-acid/5;
+  }
+
+  .badge {
+    @apply inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium font-mono;
+    @apply border transition-colors;
+  }
+
+  .glass {
+    @apply backdrop-blur-md;
+    @apply bg-l-surface/80 border-l-border;
+    @apply dark:bg-surface/80 dark:border-border;
+  }
+
+  .input-base {
+    @apply rounded-lg border px-3 py-2 text-sm font-sans;
+    @apply bg-l-panel border-l-border text-l-text placeholder:text-l-sub;
+    @apply dark:bg-panel dark:border-border dark:text-gray-200 dark:placeholder:text-gray-500;
+    @apply focus:outline-none focus:ring-2 focus:ring-acid/30 focus:border-acid/50;
+    @apply transition-colors;
+  }
+
+  .btn-primary {
+    @apply rounded-lg px-4 py-2 text-sm font-medium font-mono uppercase tracking-wider;
+    @apply bg-acid text-void hover:bg-acid-dim;
+    @apply transition-all duration-200 active:scale-[0.97];
+  }
+
+  .btn-ghost {
+    @apply rounded-lg px-3 py-2 text-sm font-medium;
+    @apply text-l-sub hover:bg-l-panel hover:text-l-text;
+    @apply dark:text-gray-400 dark:hover:bg-panel dark:hover:text-gray-200;
+    @apply transition-colors;
+  }
+
+  /* Skeleton loading pulse */
+  .skeleton {
+    @apply animate-pulse rounded-md;
+    @apply bg-l-muted/50 dark:bg-muted/50;
+  }
+}
