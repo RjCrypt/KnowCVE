@@ -117,6 +117,8 @@ function PriorityCard({
 
 /* ── Volume Chart (pure CSS) ──────────────────── */
 
+const BAR_MAX_PX = 128; // matches h-32
+
 function VolumeChart({ cves }: { cves: ProcessedCVE[] }) {
   // Group CVEs by date (last 14 days)
   const days: { date: string; count: number; dominant: string }[] = [];
@@ -143,36 +145,48 @@ function VolumeChart({ cves }: { cves: ProcessedCVE[] }) {
 
   const maxCount = Math.max(...days.map((d) => d.count), 1);
 
-  const barColor = (dom: string) => {
+  const barColorStyle = (dom: string): string => {
     switch (dom) {
-      case "CRITICAL": return "bg-red-500";
-      case "HIGH": return "bg-amber-500";
-      case "MEDIUM": return "bg-yellow-400";
-      default: return "bg-green-500";
+      case "CRITICAL": return "#ef4444";
+      case "HIGH": return "#f59e0b";
+      case "MEDIUM": return "#facc15";
+      default: return "#22c55e";
     }
   };
 
+  const emptyBarColor = "rgba(128,128,128,0.15)";
+
   return (
     <div>
-      <div className="flex items-end gap-1.5 h-32">
-        {days.map((day) => (
-          <div key={day.date} className="flex-1 flex flex-col items-center justify-end h-full group relative">
-            {/* Tooltip */}
-            <div className="absolute -top-8 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10">
-              <div className="bg-l-text dark:bg-gray-100 text-l-bg dark:text-void text-[9px] font-mono px-2 py-1 rounded whitespace-nowrap">
-                {day.date.slice(5)}: {day.count} CVEs
-              </div>
-            </div>
+      {/* Bar area */}
+      <div className="flex items-end gap-1.5" style={{ height: BAR_MAX_PX }}>
+        {days.map((day) => {
+          const barH = Math.max(Math.round((day.count / maxCount) * BAR_MAX_PX), 3);
+          const color = day.count > 0 ? barColorStyle(day.dominant) : emptyBarColor;
+
+          return (
             <div
-              className={cn(
-                "w-full rounded-sm transition-all duration-300 min-h-[2px]",
-                day.count > 0 ? barColor(day.dominant) : "bg-l-border dark:bg-border",
-                "group-hover:opacity-80"
-              )}
-              style={{ height: `${Math.max((day.count / maxCount) * 100, 3)}%` }}
-            />
-          </div>
-        ))}
+              key={day.date}
+              className="flex-1 relative group"
+              style={{ height: BAR_MAX_PX }}
+            >
+              {/* Tooltip */}
+              <div className="absolute -top-8 left-1/2 -translate-x-1/2 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10">
+                <div className="bg-l-text dark:bg-gray-100 text-l-bg dark:text-void text-[9px] font-mono px-2 py-1 rounded whitespace-nowrap shadow-lg">
+                  {day.date.slice(5)}: {day.count} CVEs
+                </div>
+              </div>
+              {/* Bar — absolute-positioned from bottom */}
+              <div
+                className="absolute bottom-0 left-0 right-0 rounded-sm transition-all duration-500 group-hover:opacity-80"
+                style={{
+                  height: barH,
+                  backgroundColor: color,
+                }}
+              />
+            </div>
+          );
+        })}
       </div>
       {/* Date labels */}
       <div className="flex gap-1.5 mt-1.5">
@@ -188,10 +202,10 @@ function VolumeChart({ cves }: { cves: ProcessedCVE[] }) {
       </div>
       {/* Legend */}
       <div className="flex items-center gap-4 mt-3 text-[9px] font-mono text-l-sub dark:text-gray-500">
-        <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-sm bg-red-500" /> Critical</span>
-        <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-sm bg-amber-500" /> High</span>
-        <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-sm bg-yellow-400" /> Medium</span>
-        <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-sm bg-green-500" /> Low</span>
+        <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-sm" style={{ backgroundColor: "#ef4444" }} /> Critical</span>
+        <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-sm" style={{ backgroundColor: "#f59e0b" }} /> High</span>
+        <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-sm" style={{ backgroundColor: "#facc15" }} /> Medium</span>
+        <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-sm" style={{ backgroundColor: "#22c55e" }} /> Low</span>
       </div>
     </div>
   );

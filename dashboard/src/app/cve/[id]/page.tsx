@@ -13,7 +13,10 @@ import {
   Cpu,
   AlertTriangle,
   Link as LinkIcon,
+  Terminal,
+  Crosshair,
 } from "lucide-react";
+import Link from "next/link";
 import { getCVE } from "@/lib/api";
 import type { ProcessedCVE } from "@/types/cve";
 import {
@@ -24,6 +27,8 @@ import {
   formatDate,
 } from "@/lib/utils";
 import AttackChainDiagram from "./AttackChainDiagram";
+import SeenInWildSection from "@/components/SeenInWildSection";
+import ResearcherNotesSection from "@/components/ResearcherNotesSection";
 import Footer from "@/components/layout/Footer";
 
 /* ── Accordion section ─────────────────────────── */
@@ -94,6 +99,7 @@ export default function CVEDetailPage() {
   const [cve, setCve] = useState<ProcessedCVE | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [mode, setMode] = useState<"beginner" | "advanced">("beginner");
 
   useEffect(() => {
     if (!cveId) return;
@@ -153,7 +159,7 @@ export default function CVEDetailPage() {
               colors.text
             )}
           >
-            {cve.priority_score}/100 {cve.priority_label}
+            KRS {cve.priority_score}/100 · {cve.priority_label}
           </span>
           <span
             className={cn(
@@ -188,6 +194,17 @@ export default function CVEDetailPage() {
             {((1 - cve.enrichment.epss_percentile) * 100).toFixed(1)}%)
           </span>
         )}
+        {/* Nuclei badge */}
+        {cve.enrichment.has_nuclei_template && (
+          <a
+            href={cve.enrichment.nuclei_template_url || "#"}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="badge bg-purple-500/15 border-purple-500/30 text-purple-400 hover:bg-purple-500/25 transition-colors"
+          >
+            <Terminal className="h-3.5 w-3.5" /> Nuclei Template
+          </a>
+        )}
       </div>
 
       {/* Priority bar */}
@@ -203,7 +220,7 @@ export default function CVEDetailPage() {
         </div>
         <div className="flex justify-between mt-1 text-[10px] font-mono text-l-sub dark:text-gray-500">
           <span>0</span>
-          <span>{cve.priority_score}/100</span>
+          <span>KRS {cve.priority_score}/100</span>
           <span>100</span>
         </div>
       </div>
@@ -215,35 +232,126 @@ export default function CVEDetailPage() {
         </p>
       </div>
 
+      {/* Beginner/Advanced Toggle */}
+      {ai && (
+        <div className="flex items-center gap-2 mb-4">
+          <span className="text-xs font-mono text-l-sub dark:text-gray-500">
+            Explanation mode:
+          </span>
+          <button
+            onClick={() => setMode("beginner")}
+            className={cn(
+              "px-3 py-1 rounded text-xs font-mono border transition-all",
+              mode === "beginner"
+                ? "bg-acid/10 text-acid-dim dark:text-acid border-acid/30"
+                : "border-l-border dark:border-border text-l-sub dark:text-gray-500"
+            )}
+          >
+            Beginner
+          </button>
+          <button
+            onClick={() => setMode("advanced")}
+            className={cn(
+              "px-3 py-1 rounded text-xs font-mono border transition-all",
+              mode === "advanced"
+                ? "bg-purple-500/10 text-purple-400 border-purple-500/30"
+                : "border-l-border dark:border-border text-l-sub dark:text-gray-500"
+            )}
+          >
+            Advanced
+          </button>
+        </div>
+      )}
+
       {/* AI Explanation */}
       {ai && (
         <div className="space-y-3 mb-6">
           <h3 className="font-display font-semibold text-sm text-l-sub dark:text-gray-500 uppercase tracking-wider">
             AI Analysis
           </h3>
-          <AccordionSection
-            icon={<span>📝</span>}
-            title="Summary"
-            content={ai.summary}
-            defaultOpen
-          />
-          <AccordionSection
-            icon={<span>🔬</span>}
-            title="Technical Detail"
-            content={ai.technical_detail}
-          />
-          <AccordionSection
-            icon={<span>💥</span>}
-            title="Impact"
-            content={ai.impact}
-          />
-          <AccordionSection
-            icon={<span>🛡</span>}
-            title="Remediation"
-            content={ai.remediation}
-          />
+
+          {/* Beginner mode: large readable summary only */}
+          {mode === "beginner" && (
+            <div className="card p-5 animate-fade-in">
+              <p className="text-base text-l-text dark:text-gray-200 leading-relaxed">
+                {ai.summary}
+              </p>
+              {ai.impact && (
+                <p className="mt-3 text-sm text-l-sub dark:text-gray-400 leading-relaxed">
+                  <span className="font-medium text-amber-400">Impact: </span>
+                  {ai.impact}
+                </p>
+              )}
+              {ai.remediation && (
+                <p className="mt-3 text-sm text-l-sub dark:text-gray-400 leading-relaxed">
+                  <span className="font-medium text-acid">Fix: </span>
+                  {ai.remediation}
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* Advanced mode: all 4 accordion sections */}
+          {mode === "advanced" && (
+            <>
+              <AccordionSection
+                icon={<span>📝</span>}
+                title="Summary"
+                content={ai.summary}
+                defaultOpen
+              />
+              <AccordionSection
+                icon={<span>🔬</span>}
+                title="Technical Detail"
+                content={ai.technical_detail}
+              />
+              <AccordionSection
+                icon={<span>💥</span>}
+                title="Impact"
+                content={ai.impact}
+              />
+              <AccordionSection
+                icon={<span>🛡</span>}
+                title="Remediation"
+                content={ai.remediation}
+              />
+            </>
+          )}
         </div>
       )}
+
+      {/* MITRE ATT&CK Techniques (advanced mode only) */}
+      {mode === "advanced" &&
+        ai?.mitre_techniques &&
+        ai.mitre_techniques.length > 0 && (
+          <div className="mb-6 p-4 rounded-lg border border-red-500/20 bg-red-500/5">
+            <h3 className="font-mono text-sm font-medium text-l-sub dark:text-gray-400 mb-3 uppercase tracking-widest">
+              MITRE ATT&CK
+            </h3>
+            <div className="flex flex-wrap gap-2">
+              {ai.mitre_techniques.map((t) => (
+                <a
+                  key={t.technique_id}
+                  href={t.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex flex-col px-3 py-2 rounded border border-red-500/20
+                             bg-red-500/5 hover:bg-red-500/10 transition-colors"
+                >
+                  <span className="font-mono text-xs text-red-400 font-medium">
+                    {t.technique_id}
+                  </span>
+                  <span className="text-xs text-l-sub dark:text-gray-400">
+                    {t.technique_name}
+                  </span>
+                  <span className="text-[10px] text-l-sub dark:text-gray-600">
+                    {t.tactic}
+                  </span>
+                </a>
+              ))}
+            </div>
+          </div>
+        )}
 
       {/* Attack chain diagram */}
       {ai && (
@@ -252,12 +360,71 @@ export default function CVEDetailPage() {
             Attack Chain
           </h3>
           <AttackChainDiagram
-            tags={ai.tags}
-            technicalDetail={ai.technical_detail}
-            weaknesses={cve.weaknesses}
+            tags={ai.tags || []}
+            technicalDetail={ai.technical_detail || ""}
+            weaknesses={cve.weaknesses || []}
           />
         </div>
       )}
+
+      {/* Nuclei Template Box */}
+      {cve.enrichment.has_nuclei_template && (
+        <div className="mb-6 p-4 rounded-lg border border-purple-500/20 bg-purple-500/5">
+          <div className="flex items-center justify-between mb-2">
+            <span className="font-mono text-sm font-medium text-purple-400 flex items-center gap-2">
+              <Terminal className="w-4 h-4" />
+              Nuclei Template Available
+            </span>
+            {cve.enrichment.nuclei_template_url && (
+              <a
+                href={cve.enrichment.nuclei_template_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-xs font-mono text-purple-400 hover:underline"
+              >
+                View on GitHub →
+              </a>
+            )}
+          </div>
+          <div className="bg-l-panel dark:bg-surface rounded p-3 font-mono text-xs text-l-text dark:text-gray-300 overflow-x-auto">
+            <span className="text-l-sub dark:text-gray-500">
+              # Run detection against your target:
+            </span>
+            <br />
+            <span className="text-acid-dim dark:text-acid">nuclei</span>
+            {" "}-u https://TARGET
+            {cve.enrichment.nuclei_template_url &&
+              cve.enrichment.nuclei_template_url.includes("/blob/main/") && (
+                <>
+                  {" "}-t{" "}
+                  {cve.enrichment.nuclei_template_url.split("/blob/main/")[1]}
+                </>
+              )}
+            {" "}-v
+          </div>
+        </div>
+      )}
+
+      {/* Exploit Intelligence link */}
+      <Link
+        href={`/exploit-intel/${cve.cve_id}`}
+        className="flex items-center justify-between p-4 rounded-lg border
+                   border-purple-500/20 bg-purple-500/5 hover:bg-purple-500/10
+                   transition-colors group mb-6"
+      >
+        <div>
+          <div className="font-mono text-sm font-medium text-purple-400 flex items-center gap-2">
+            <Crosshair className="w-4 h-4" />
+            Exploit Intelligence
+          </div>
+          <div className="text-xs text-l-sub dark:text-gray-500 mt-0.5">
+            Metasploit modules · ExploitDB · PoC quality signals · Ready-to-use commands
+          </div>
+        </div>
+        <div className="text-purple-400 group-hover:translate-x-1 transition-transform">
+          →
+        </div>
+      </Link>
 
       {/* Tags + Affected Tech */}
       <div className="flex flex-col sm:flex-row gap-4 mb-6">
@@ -347,6 +514,15 @@ export default function CVEDetailPage() {
           </div>
         </div>
       )}
+
+      {/* Community Intelligence */}
+      <div className="mb-6">
+        <h3 className="font-display font-semibold text-sm text-l-sub dark:text-gray-500 uppercase tracking-wider mb-3">
+          Community Intelligence
+        </h3>
+        <SeenInWildSection cveId={cve.cve_id} />
+        <ResearcherNotesSection cveId={cve.cve_id} />
+      </div>
 
       {/* References */}
       {cve.references.length > 0 && (

@@ -182,3 +182,76 @@ class GreyNoiseService:
         self._cache[cve_id] = (result, time.time())
         return result
 
+
+# ── Nuclei Template Detection ─────────────────────────────────────────────────
+
+class NucleiTemplateService:
+    """
+    Checks the ProjectDiscovery Nuclei templates GitHub repository
+    for existing detection templates for a given CVE ID.
+    Public repo — no API key required for basic search.
+    Results cached in memory for 6 hours per CVE.
+    """
+
+    BASE_URL = "https://api.github.com/search/code"
+    REPO = "projectdiscovery/nuclei-templates"
+    TEMPLATE_BASE = "https://raw.githubusercontent.com/projectdiscovery/nuclei-templates/main"
+
+    def __init__(self) -> None:
+        self._cache: dict[str, dict] = {}
+        self._cache_time: dict[str, float] = {}
+        self._cache_ttl = 6 * 3600  # 6 hours
+
+    async def check_template(self, cve_id: str) -> dict:
+        """
+        Returns:
+        {
+          "has_template": bool,
+          "template_url": str | None,   # direct GitHub URL to template file
+          "template_raw_url": str | None # raw URL for embedding
+        }
+        """
+        import time
+
+        # Check in-memory cache first
+        if cve_id in self._cache:
+            if time.time() - self._cache_time[cve_id] < self._cache_ttl:
+                return self._cache[cve_id]
+
+        result = {"has_template": False, "template_url": None, "template_raw_url": None}
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                params = {
+                    "q": f"{cve_id} repo:{self.REPO}",
+                    "per_page": 1,
+                }
+                headers = {"Accept": "application/vnd.github.v3+json"}
+                # Add GitHub token if configured to avoid rate limits
+                if settings.GITHUB_TOKEN:
+                    headers["Authorization"] = f"token {settings.GITHUB_TOKEN}"
+
+                resp = await client.get(self.BASE_URL, params=params, headers=headers)
+
+                if resp.status_code == 200:
+                    data = resp.json()
+                    items = data.get("items", [])
+                    if items:
+                        file_path = items[0].get("path", "")
+                        html_url = items[0].get("html_url", "")
+                        raw_url = f"{self.TEMPLATE_BASE}/{file_path}"
+                        result = {
+                            "has_template": True,
+                            "template_url": html_url,
+                            "template_raw_url": raw_url,
+                        }
+                elif resp.status_code == 403:
+                    logger.warning("GitHub API rate limit hit for Nuclei template check")
+
+        except Exception as e:
+            logger.debug(f"Nuclei template check failed for {cve_id}: {e}")
+
+        self._cache[cve_id] = result
+        self._cache_time[cve_id] = time.time()
+        return result
+

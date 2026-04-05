@@ -109,7 +109,7 @@ export default function AttackChainDiagram({
       <svg
         viewBox={`0 0 ${totalW} ${totalH}`}
         className="w-full min-w-[600px]"
-        style={{ maxHeight: 120 }}
+        preserveAspectRatio="xMidYMid meet"
       >
         {boxes.map((box, i) => {
           const x = padX + i * (boxW + gap);

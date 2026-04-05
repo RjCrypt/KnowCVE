@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Shield, Sun, Moon, Activity } from "lucide-react";
+import { Shield, Sun, Moon, Activity, Menu, X, Crosshair } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTheme } from "./ThemeProvider";
 import { getHealth } from "@/lib/api";
@@ -12,6 +12,7 @@ export default function Navbar() {
   const { theme, toggle } = useTheme();
   const pathname = usePathname();
   const [alive, setAlive] = useState<boolean | null>(null);
+  const [mobileOpen, setMobileOpen] = useState(false);
 
   useEffect(() => {
     let mounted = true;
@@ -31,6 +32,11 @@ export default function Navbar() {
     };
   }, []);
 
+  // Close mobile menu on route change
+  useEffect(() => {
+    setMobileOpen(false);
+  }, [pathname]);
+
   const navLink = (href: string, label: string, accent?: string) => (
     <Link
       href={href}
@@ -41,6 +47,22 @@ export default function Navbar() {
             ? `${accent}`
             : "text-acid bg-acid/10"
           : "text-l-sub dark:text-gray-400 hover:text-l-text dark:hover:text-gray-200"
+      )}
+    >
+      {label}
+    </Link>
+  );
+
+  const mobileLink = (href: string, label: string, accent?: string) => (
+    <Link
+      href={href}
+      className={cn(
+        "block text-sm font-medium transition-colors px-3 py-2.5 rounded-md",
+        pathname === href
+          ? accent
+            ? `${accent}`
+            : "text-acid bg-acid/10"
+          : "text-l-sub dark:text-gray-400 hover:text-l-text dark:hover:text-gray-200 hover:bg-l-panel dark:hover:bg-panel"
       )}
     >
       {label}
@@ -59,7 +81,7 @@ export default function Navbar() {
             </span>
           </Link>
 
-          <nav className="hidden sm:flex items-center gap-1">
+          <nav className="hidden md:flex items-center gap-1">
             {navLink("/", "Dashboard")}
 
             {/* Threats link — red accent with pulsing dot */}
@@ -79,14 +101,28 @@ export default function Navbar() {
               Threats
             </Link>
 
-            {/* Zero-Day link — amber accent */}
-            {navLink("/zeroday", "Zero-Day", "text-amber-400 bg-amber-500/10")}
+            {/* Exploit Intel link — purple accent with crosshair */}
+            <Link
+              href="/exploit-intel"
+              className={cn(
+                "text-sm font-medium transition-colors px-3 py-1.5 rounded-md flex items-center gap-1.5",
+                pathname === "/exploit-intel" || pathname.startsWith("/exploit-intel/")
+                  ? "text-purple-400 bg-purple-500/10"
+                  : "text-l-sub dark:text-gray-400 hover:text-l-text dark:hover:text-gray-200"
+              )}
+            >
+              <Crosshair className="h-3.5 w-3.5" />
+              Exploit Intel
+            </Link>
+
+            {/* KRS link — acid accent */}
+            {navLink("/krs", "KRS", "text-acid bg-acid/10")}
 
             {navLink("/stats", "Stats")}
           </nav>
         </div>
 
-        {/* Right — Status + Theme */}
+        {/* Right — Status + Theme + Mobile toggle */}
         <div className="flex items-center gap-3">
           {/* Backend status */}
           <div className="flex items-center gap-1.5 text-xs font-mono text-l-sub dark:text-gray-500">
@@ -102,25 +138,6 @@ export default function Navbar() {
             />
           </div>
 
-          {/* Mobile nav */}
-          <nav className="flex sm:hidden items-center gap-1">
-            {navLink("/", "Home")}
-            <Link
-              href="/threats"
-              className={cn(
-                "text-sm font-medium transition-colors px-2 py-1.5 rounded-md flex items-center gap-1",
-                pathname === "/threats"
-                  ? "text-red-400 bg-red-500/10"
-                  : "text-l-sub dark:text-gray-400"
-              )}
-            >
-              <span className="h-1.5 w-1.5 rounded-full bg-red-500" />
-              Threats
-            </Link>
-            {navLink("/zeroday", "0-Day", "text-amber-400 bg-amber-500/10")}
-            {navLink("/stats", "Stats")}
-          </nav>
-
           {/* Theme toggle */}
           <button
             onClick={toggle}
@@ -133,8 +150,56 @@ export default function Navbar() {
               <Moon className="h-4 w-4" />
             )}
           </button>
+
+          {/* Mobile hamburger */}
+          <button
+            onClick={() => setMobileOpen(!mobileOpen)}
+            className="md:hidden btn-ghost rounded-lg p-2"
+            aria-label="Toggle menu"
+          >
+            {mobileOpen ? (
+              <X className="h-4 w-4" />
+            ) : (
+              <Menu className="h-4 w-4" />
+            )}
+          </button>
         </div>
       </div>
+
+      {/* Mobile menu */}
+      {mobileOpen && (
+        <div className="md:hidden border-t border-l-border dark:border-border glass animate-fade-in">
+          <nav className="mx-auto max-w-7xl px-4 py-3 space-y-1">
+            {mobileLink("/", "Dashboard")}
+            <Link
+              href="/threats"
+              className={cn(
+                "flex items-center gap-2 text-sm font-medium transition-colors px-3 py-2.5 rounded-md",
+                pathname === "/threats"
+                  ? "text-red-400 bg-red-500/10"
+                  : "text-l-sub dark:text-gray-400 hover:text-l-text dark:hover:text-gray-200 hover:bg-l-panel dark:hover:bg-panel"
+              )}
+            >
+              <span className="h-2 w-2 rounded-full bg-red-500" />
+              Threats
+            </Link>
+            <Link
+              href="/exploit-intel"
+              className={cn(
+                "flex items-center gap-2 text-sm font-medium transition-colors px-3 py-2.5 rounded-md",
+                pathname === "/exploit-intel" || pathname.startsWith("/exploit-intel/")
+                  ? "text-purple-400 bg-purple-500/10"
+                  : "text-l-sub dark:text-gray-400 hover:text-l-text dark:hover:text-gray-200 hover:bg-l-panel dark:hover:bg-panel"
+              )}
+            >
+              <Crosshair className="h-3.5 w-3.5" />
+              Exploit Intel
+            </Link>
+            {mobileLink("/krs", "KRS", "text-acid bg-acid/10")}
+            {mobileLink("/stats", "Stats")}
+          </nav>
+        </div>
+      )}
     </header>
   );
 }

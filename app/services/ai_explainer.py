@@ -44,7 +44,15 @@ Given a CVE record and its enrichment data, produce a structured JSON explanatio
   "impact": "What systems, data, or operations are at risk. Business impact and blast radius.",
   "remediation": "Specific steps to patch or mitigate, including version numbers where available.",
   "tags": ["tag1", "tag2"],
-  "affected_tech": ["technology1", "technology2"]
+  "affected_tech": ["technology1", "technology2"],
+  "mitre_techniques": [
+    {
+      "technique_id": "T1190",
+      "technique_name": "Exploit Public-Facing Application",
+      "tactic": "Initial Access",
+      "url": "https://attack.mitre.org/techniques/T1190"
+    }
+  ]
 }
 
 Rules:
@@ -52,6 +60,16 @@ Rules:
 - tags: 3–6 short labels (e.g. "RCE", "authentication-bypass", "web", "critical").
 - affected_tech: specific software/library names affected.
 - Keep each field concise but informative.
+- For mitre_techniques: Map this CVE to the most relevant MITRE ATT&CK techniques.
+  Include 1-3 techniques maximum. Only include techniques you are highly confident
+  apply to this specific vulnerability. Common mappings:
+  - Network RCE → T1190 (Exploit Public-Facing Application)
+  - Privilege escalation → T1068 (Exploitation for Privilege Escalation)
+  - Browser/client exploit → T1203 (Exploitation for Client Execution)
+  - Authentication bypass → T1078 (Valid Accounts) or T1556 (Modify Authentication Process)
+  - SQL injection → T1190 + T1005 (Data from Local System)
+  - Memory corruption RCE → T1190 or T1203 depending on attack vector
+  If unsure, return an empty array rather than guessing.
 """
 
 
@@ -413,5 +431,86 @@ class GroqExplainer:
             impact=f"CVSS: {raw.cvss_score}. Check NVD for full details.",
             remediation=f"Visit https://nvd.nist.gov/vuln/detail/{raw.cve_id}",
             tags=[],
+            affected_tech=[],
+        )
+
+    def generate_lightweight_explanation(
+        self,
+        cve: RawCVE,
+        enrichment: EnrichmentData,
+    ) -> AIExplanation:
+        """
+        Build a basic AIExplanation from raw NVD data without calling any AI provider.
+        Used for MEDIUM priority CVEs (score 25-49) to conserve API tokens.
+        Quality is lower than a full AI explanation but still useful.
+        """
+        vector_string = cve.cvss_vector or ""
+
+        # Build plain-English CVSS breakdown for technical_detail
+        vector_parts = []
+        tags = []
+        
+        # Simple lookup tables for CVSS v3/3.1
+        if "AV:N" in vector_string:
+            vector_parts.append("Attack vector: Network")
+            tags.append("Network")
+        elif "AV:A" in vector_string:
+            vector_parts.append("Attack vector: Adjacent Network")
+        elif "AV:L" in vector_string:
+            vector_parts.append("Attack vector: Local")
+        elif "AV:P" in vector_string:
+            vector_parts.append("Attack vector: Physical")
+            
+        if "AC:L" in vector_string:
+            vector_parts.append("Complexity: Low")
+            tags.append("Low Complexity")
+        elif "AC:H" in vector_string:
+            vector_parts.append("Complexity: High")
+            
+        if "PR:N" in vector_string:
+            vector_parts.append("Privileges required: None")
+            tags.append("No Auth Required")
+        elif "PR:L" in vector_string:
+            vector_parts.append("Privileges required: Low")
+        elif "PR:H" in vector_string:
+            vector_parts.append("Privileges required: High")
+            
+        if "UI:N" in vector_string:
+            vector_parts.append("User interaction: None")
+            tags.append("No User Interaction")
+        elif "UI:R" in vector_string:
+            vector_parts.append("User interaction: Required")
+
+        if enrichment.in_kev:
+            tags.append('Actively Exploited')
+        if enrichment.has_poc:
+            tags.append('PoC Available')
+
+        cvss_score = cve.cvss_score or "Unknown"
+        cvss_severity = cve.cvss_version or "Unknown"
+        nvd_url = f"https://nvd.nist.gov/vuln/detail/{cve.cve_id}"
+
+        return AIExplanation(
+            summary=(
+                f"{cve.cve_id} is a {cvss_severity} severity vulnerability "
+                f"(CVSS {cvss_score}). {cve.description[:250]}"
+            ),
+            technical_detail=(
+                f"CVSS Score: {cvss_score} ({cvss_severity})\n"
+                f"{chr(10).join(vector_parts)}\n"
+                f"CWE: {', '.join(cve.weaknesses) if cve.weaknesses else 'Not specified'}\n"
+                f"Vector string: {vector_string if vector_string else 'Not available'}"
+            ),
+            impact=(
+                f"{'Actively exploited in the wild (CISA KEV confirmed). ' if enrichment.in_kev else ''}"
+                f"{'Public PoC exploit code available. ' if enrichment.has_poc else ''}"
+                f"EPSS exploit probability: {enrichment.epss_score * 100:.1f}%."
+            ),
+            remediation=(
+                f"1. Check the vendor advisory for patch information.\n"
+                f"2. Monitor CISA KEV for active exploitation status.\n"
+                f"3. Full details: {nvd_url}"
+            ),
+            tags=tags,
             affected_tech=[],
         )
