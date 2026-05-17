@@ -11,9 +11,23 @@ services:
         sync: false
       - key: GROQ_API_KEY
         sync: false
+      - key: CEREBRAS_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
       - key: TELEGRAM_BOT_TOKEN
         sync: false
       - key: GITHUB_TOKEN
+        sync: false
+      - key: GREYNOISE_API_KEY
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false
+      - key: APP_SECRET_KEY
+        sync: false
+      - key: ABUSEIPDB_API_KEY
         sync: false
       - key: POLL_INTERVAL_MINUTES
         value: "15"
