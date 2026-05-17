@@ -4,9 +4,15 @@ import { cookies } from "next/headers";
 export function createClient() {
   const cookieStore = cookies();
 
+  let rawUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
+  rawUrl = rawUrl.trim();
+  if (rawUrl && !rawUrl.startsWith("http")) {
+    rawUrl = `https://${rawUrl}`;
+  }
+
   return createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    rawUrl,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "",
     {
       cookies: {
         getAll() {
