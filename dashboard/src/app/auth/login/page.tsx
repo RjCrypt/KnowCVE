@@ -12,11 +12,12 @@ export default function LoginPage() {
   const [loading, setLoading] = useState<"github" | "google" | null>(null);
   const supabase = createClient();
 
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
-
   const handleOAuth = async (provider: "github" | "google") => {
     setLoading(provider);
     try {
+      // Dynamically get the current domain (works flawlessly on Vercel previews and production)
+      const appUrl = typeof window !== "undefined" ? window.location.origin : (process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000");
+      
       await supabase.auth.signInWithOAuth({
         provider,
         options: {
