@@ -26,10 +26,10 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const stored = localStorage.getItem("knowcve-theme") as Theme | null;
-    if (stored === "light" || stored === "dark") {
-      setTheme(stored);
-    } else if (window.matchMedia("(prefers-color-scheme: light)").matches) {
+    if (stored === "light") {
       setTheme("light");
+    } else {
+      setTheme("dark");
     }
     setMounted(true);
   }, []);
