@@ -91,6 +91,12 @@ export default function CVECard({ cve, index = 0 }: CVECardProps) {
             <span className="font-mono font-medium text-acid text-sm shrink-0">
               {cve.cve_id}
             </span>
+            {cve.cve_id.toUpperCase().startsWith("GHSA-") && (
+              <span className="badge bg-purple-500/10 border-purple-500/30 text-purple-400 text-[10px] py-0 px-1.5 flex items-center gap-1">
+                <ShieldAlert className="h-2.5 w-2.5" /> GHSA
+              </span>
+            )}
+
 
             {/* KEV badge */}
             {cve.enrichment.in_kev && (

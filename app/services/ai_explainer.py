@@ -18,58 +18,46 @@ from typing import Optional
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from app.core.config import settings
-from app.models.cve import AIExplanation, EnrichmentData, RawCVE
+from app.models.cve import AIExplanation, AttackTechnique, EnrichmentData, RawCVE
 
 logger = logging.getLogger(__name__)
 
 # ── Models ────────────────────────────────────────────────────────────────────
 MODEL_GROQ_LARGE = "llama-3.3-70b-versatile"
 MODEL_GROQ_SMALL = "llama-3.1-8b-instant"
-MODEL_CEREBRAS = "llama3.3-70b"
-MODEL_GEMINI = "gemini-1.5-flash"
+MODEL_CEREBRAS = "llama3.1-8b"
+MODEL_GEMINI = "gemini-2.0-flash"
 
 DEFAULT_COOLDOWN_MINUTES = 60
 
 # ── Shared prompt ─────────────────────────────────────────────────────────────
 
-SYSTEM_PROMPT = """You are KnowCVE — an expert security educator for penetration testers and bug bounty hunters.
+SYSTEM_PROMPT = """You are KnowCVE's threat intelligence engine. You reason like a senior offensive security researcher who also understands defensive operations. Your job is not to summarise advisories — it is to perform original technical analysis of vulnerabilities.
 
-Be concise. Each field must be under 150 words. Total response must stay under 800 tokens.
+You will receive structured CVE data. You must produce a JSON object with exactly these fields:
 
-Given a CVE record and its enrichment data, produce a structured JSON explanation with exactly these keys:
+EXISTING FIELDS (preserve quality, elevate depth):
+- summary: 2-3 sentences. Lead with the vulnerability primitive (buffer overflow, use-after-free, SSRF, etc.), the affected component, and the worst-case impact. No marketing language.
+- technical_detail: Explain the vulnerability mechanism at the code/architecture level. For memory corruption: describe the vulnerable code path, the memory primitive created (controlled write, type confusion, etc.), and the exploitation path from that primitive to code execution or privilege escalation. For logic flaws: describe the state machine failure or trust assumption that breaks. For injection: explain the parser/interpreter context and why the sanitisation fails. Minimum 150 words.
+- impact: Business and operational impact. Distinguish between direct impact (what the attacker gets from this CVE alone) and chained impact (what doors this opens in a typical environment). Include specific examples of what an attacker can do post-exploitation.
+- remediation: Explain WHY the patch works at a technical level, not just what version to upgrade to. What primitive does the fix close? What is the defender's detection window? What compensating controls reduce risk before patching?
+- tags: Array of strings. Include: CVE ID, vulnerability class (CWE), affected vendor/product, MITRE tactics present.
+- affected_tech: Array of specific technology strings (e.g., "Apache HTTP Server 2.4.x", "Linux kernel < 6.1.72").
+- mitre_techniques: Array of objects with technique_id, technique_name, tactic, and url fields. Map this CVE to 1-3 most relevant MITRE ATT&CK techniques. Include url as "https://attack.mitre.org/techniques/{technique_id}". If unsure, return an empty array.
 
-{
-  "summary": "1–2 sentence plain-English overview of what this vulnerability is.",
-  "technical_detail": "Detailed technical explanation of the vulnerability mechanism, attack vector, and exploitation method.",
-  "impact": "What systems, data, or operations are at risk. Business impact and blast radius.",
-  "remediation": "Specific steps to patch or mitigate, including version numbers where available.",
-  "tags": ["tag1", "tag2"],
-  "affected_tech": ["technology1", "technology2"],
-  "mitre_techniques": [
-    {
-      "technique_id": "T1190",
-      "technique_name": "Exploit Public-Facing Application",
-      "tactic": "Initial Access",
-      "url": "https://attack.mitre.org/techniques/T1190"
-    }
-  ]
-}
+NEW FIELDS (this is where you differentiate):
+- vulnerability_class_analysis: Situate this CVE within its vulnerability class historically. How does this compare to similar bugs in the same component or class? What does the presence of this bug reveal about the codebase's security posture? What related attack surface should a researcher examine? This is your technical depth showcase — 100-200 words.
+- adversarial_context: Threat actor and campaign context. Which threat actor groups (APT or eCrime) historically target this CVE class or this specific software? What does the typical exploit deployment timeline look like (days from disclosure to weaponisation, typical dwell time)? What post-exploitation activity follows initial access through this vector? Ground this in real historical patterns, not speculation. If the CVE is in KEV, state what is known about its exploitation. 100-150 words.
+- exploit_narrative: Walk through the exploit chain as an educational step-by-step sequence. This is NOT a working exploit or weaponised guidance — it is the logical sequence an attacker would follow: reconnaissance step, triggering condition, what happens in memory/application state, the controlled primitive, and the final capability achieved. Write for a penetration tester who needs to understand the technique to build a test case. 150-200 words.
+- attack_techniques: Array of ATT&CK technique objects for the kill chain specific to this CVE. Include 4-7 techniques covering the full chain from initial access through impact. Each object must have:
+  - technique_id: MITRE ATT&CK ID (e.g., "T1190", "T1059.001")
+  - technique_name: Official technique name
+  - tactic: Parent tactic name (Initial Access, Execution, Persistence, Privilege Escalation, Defense Evasion, Credential Access, Discovery, Lateral Movement, Collection, Command and Control, Exfiltration, Impact)
+  - tactic_phase: Integer 1-12 corresponding to tactic order in ATT&CK
+  - description: 1-2 sentences on how this technique applies specifically to exploitation of THIS CVE in a realistic intrusion scenario
+  - is_pivot: true only for the single technique that represents the core exploitation step
 
-Rules:
-- Output ONLY the JSON object, no markdown fences, no commentary.
-- tags: 3–6 short labels (e.g. "RCE", "authentication-bypass", "web", "critical").
-- affected_tech: specific software/library names affected.
-- Keep each field concise but informative.
-- For mitre_techniques: Map this CVE to the most relevant MITRE ATT&CK techniques.
-  Include 1-3 techniques maximum. Only include techniques you are highly confident
-  apply to this specific vulnerability. Common mappings:
-  - Network RCE → T1190 (Exploit Public-Facing Application)
-  - Privilege escalation → T1068 (Exploitation for Privilege Escalation)
-  - Browser/client exploit → T1203 (Exploitation for Client Execution)
-  - Authentication bypass → T1078 (Valid Accounts) or T1556 (Modify Authentication Process)
-  - SQL injection → T1190 + T1005 (Data from Local System)
-  - Memory corruption RCE → T1190 or T1203 depending on attack vector
-  If unsure, return an empty array rather than guessing.
+Respond ONLY with a valid JSON object. No preamble, no markdown fences, no explanation outside the JSON.
 """
 
 
@@ -214,7 +202,7 @@ class GroqProvider(BaseExplainer):
                     {"role": "user", "content": user_content},
                 ],
                 temperature=0.3,
-                max_tokens=1200,
+                max_tokens=2400,
             )
             text = completion.choices[0].message.content or "{}"
             data = _parse_json_response(text)
@@ -258,7 +246,7 @@ class CerebrasProvider(BaseExplainer):
                     {"role": "user", "content": user_content},
                 ],
                 temperature=0.3,
-                max_tokens=1200,
+                max_tokens=2400,
             )
             text = completion.choices[0].message.content or "{}"
             data = _parse_json_response(text)
@@ -275,15 +263,13 @@ class CerebrasProvider(BaseExplainer):
 
 
 class GeminiProvider(BaseExplainer):
-    """Google Gemini provider using google-generativeai SDK (sync → async)."""
+    """Google Gemini provider using the new google-genai SDK (native async)."""
 
     def __init__(self) -> None:
         super().__init__("Gemini")
-        import google.generativeai as genai
+        from google import genai
 
-        genai.configure(api_key=settings.GEMINI_API_KEY)
-        self._genai = genai
-        self._model = genai.GenerativeModel(MODEL_GEMINI)
+        self._client = genai.Client(api_key=settings.GEMINI_API_KEY)
 
     @retry(
         stop=stop_after_attempt(2),
@@ -294,20 +280,18 @@ class GeminiProvider(BaseExplainer):
     async def generate(
         self, raw: RawCVE, enrichment: EnrichmentData, priority_label: str
     ) -> AIExplanation:
+        from google.genai import types
+
         user_content = _build_user_prompt(raw, enrichment)
         full_prompt = f"{SYSTEM_PROMPT}\n\n{user_content}"
 
         try:
-            # Gemini SDK is synchronous — run in executor to not block
-            loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(
-                None,
-                lambda: self._model.generate_content(
-                    full_prompt,
-                    generation_config=self._genai.GenerationConfig(
-                        temperature=0.3,
-                        max_output_tokens=1200,
-                    ),
+            response = await self._client.aio.models.generate_content(
+                model=MODEL_GEMINI,
+                contents=full_prompt,
+                config=types.GenerateContentConfig(
+                    temperature=0.3,
+                    max_output_tokens=2400,
                 ),
             )
             text = response.text or "{}"
@@ -344,8 +328,11 @@ class GroqExplainer:
             logger.info("AI provider registered: Cerebras")
 
         if settings.GEMINI_API_KEY:
-            self._providers.append(GeminiProvider())
-            logger.info("AI provider registered: Gemini")
+            try:
+                self._providers.append(GeminiProvider())
+                logger.info("AI provider registered: Gemini")
+            except ImportError as e:
+                logger.warning(f"Gemini provider unavailable (install google-genai): {e}")
 
         if not self._providers:
             logger.warning("No AI providers configured — explanations will be placeholders")
@@ -353,7 +340,7 @@ class GroqExplainer:
         # Token budget tracking (per-day)
         self._tokens_used_today = 0
         self._budget_date = date.today()
-        self._daily_budget = 90_000
+        self._daily_budget = 180_000
 
     # ── budget helpers ────────────────────────────────────────────────────
 
@@ -391,7 +378,7 @@ class GroqExplainer:
             try:
                 logger.info(f"Explaining {raw.cve_id} via {provider.name}")
                 result = await provider.generate(raw, enrichment, priority_label)
-                self._tokens_used_today += 900  # estimate
+                self._tokens_used_today += 2000  # estimate (Phase 5.5 expanded output)
                 return result
             except RateLimitError as e:
                 logger.warning(f"{provider.name} rate-limited for {raw.cve_id}: {e}")

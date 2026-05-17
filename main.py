@@ -4,17 +4,29 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import init_routes, router
+from app.api.auth_routes import init_auth_routes, auth_router
 from app.services.ai_explainer import GroqExplainer
 from app.services.enrichment import CISAKEVService, EPSSService, GitHubAdvisoryService, GreyNoiseService
 from app.services.database import SupabaseService
 from app.services.poller import CVEPoller
 from app.services.telegram_bot import TelegramAlertBot
 from app.services.triage import TriageEngine
+
+# Phase 5 services
+from app.services.threat_actors import ThreatActorService
+from app.services.ransomware_tracker import RansomwareTrackerService
+from app.services.ioc_pulse import IOCPulseService
+from app.services.news_intel import NewsIntelService
+from app.services.breach_intel import BreachIntelService
+
+from apscheduler.triggers.interval import IntervalTrigger
+from apscheduler.triggers.cron import CronTrigger
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -43,6 +55,13 @@ triage_engine = TriageEngine(
 poller = CVEPoller(triage_engine=triage_engine)
 telegram_bot = TelegramAlertBot()
 
+# Phase 5 services — all independent of the CVE polling pipeline
+threat_actor_service = ThreatActorService()
+ransomware_tracker = RansomwareTrackerService()
+ioc_pulse = IOCPulseService()
+news_intel = NewsIntelService()
+breach_intel = BreachIntelService()
+
 
 # ── Lifespan ──────────────────────────────────────────────────────────────────
 
@@ -57,22 +76,79 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Failed to load KEV catalog (non-fatal): {e}")
 
-    # 2. Wire Telegram ↔ Poller
+    # 2. Wire Telegram ↔ Poller + Phase 5 services
     telegram_bot.set_poller(poller)
+    telegram_bot.set_news_intel(news_intel)
+    telegram_bot.set_threat_actors(threat_actor_service)
+    telegram_bot.set_ransomware(ransomware_tracker)
+    telegram_bot.set_breach_intel(breach_intel)
+    telegram_bot.set_ioc_pulse(ioc_pulse)
     poller.set_alert_callback(telegram_bot.broadcast_alert)
     poller.set_breaking_threat_callback(telegram_bot.broadcast_breaking_threat)
     poller.set_database(db_service)
 
-    # 3. Start Telegram bot (non-fatal — server works without it)
+    # 3. Seed Phase 5 data (only runs if tables are empty)
+    try:
+        await threat_actor_service.seed_initial_actors()
+        await ransomware_tracker.seed_initial_campaigns()
+        await breach_intel.seed_initial_breaches()
+    except Exception as e:
+        logger.warning(f"Phase 5 seeding failed (non-fatal): {e}")
+
+    # 4. Start Telegram bot (non-fatal — server works without it)
     try:
         await telegram_bot.start()
     except Exception as e:
         logger.warning(f"Telegram bot failed to start (non-fatal): {e}")
 
-    # 4. Start poller
+    # 5. Start poller and Phase 5 scheduled jobs
     poller.start()
 
-    logger.info("✅ KnowCVE ready")
+    # Weekly MITRE ATT&CK sync — runs independently of CVE pipeline
+    poller.scheduler.add_job(
+        threat_actor_service.sync_all_mitre_data,
+        trigger=IntervalTrigger(weeks=1),
+        id="mitre_sync",
+        next_run_time=datetime.now(timezone.utc),
+        max_instances=1,
+    )
+
+    async def fetch_news_and_extract_breaches():
+        await news_intel.fetch_all_feeds()
+        await breach_intel.extract_breaches_from_news()
+
+    # Fetch news every 2 hours — independent of CVE pipeline
+    poller.scheduler.add_job(
+        fetch_news_and_extract_breaches,
+        trigger=IntervalTrigger(hours=2),
+        id="news_fetch",
+        next_run_time=datetime.now(timezone.utc),
+        max_instances=1,
+    )
+
+    # Daily briefing via Telegram at 8am UTC
+    async def send_daily_briefing():
+        briefing = await news_intel.get_daily_briefing()
+        await telegram_bot.broadcast_text(briefing)
+
+    poller.scheduler.add_job(
+        send_daily_briefing,
+        trigger=CronTrigger(hour=8, minute=0),
+        id="daily_briefing",
+        max_instances=1,
+    )
+
+    # Run advisory feed immediately on startup to catch recent supply chain attacks
+    poller.scheduler.add_job(
+        poller.advisory_feed_job,
+        trigger=IntervalTrigger(hours=2),
+        id="advisory_feed_startup",
+        next_run_time=datetime.now(timezone.utc),
+        max_instances=1,
+        replace_existing=True,
+    )
+
+    logger.info("✅ KnowCVE ready — Phase 5 threat intelligence + supply chain detection active")
     yield
 
     # Shutdown
@@ -86,8 +162,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="KnowCVE",
-    description="Real-time CVE monitoring, enrichment, AI explanation, and Telegram alerting",
-    version="2.0.0",
+    description="Real-time CVE monitoring, enrichment, AI explanation, threat intelligence, and Telegram alerting",
+    version="3.0.0",
     lifespan=lifespan,
 )
 
@@ -100,9 +176,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Wire routes with runtime state
-init_routes(poller=poller, telegram_bot=telegram_bot, db=db_service)
+# Wire routes with runtime state — includes all Phase 5 services
+init_routes(
+    poller=poller,
+    telegram_bot=telegram_bot,
+    db=db_service,
+    threat_actors=threat_actor_service,
+    ransomware=ransomware_tracker,
+    ioc=ioc_pulse,
+    news=news_intel,
+    breaches=breach_intel,
+)
 app.include_router(router)
+
+# Phase 6 — Auth, Bookmarks, Waitlist
+init_auth_routes(db=db_service)
+app.include_router(auth_router)
 
 
 if __name__ == "__main__":

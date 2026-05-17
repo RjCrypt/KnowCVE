@@ -13,11 +13,12 @@ export default function DashboardPage() {
       {/* Heading */}
       <div className="mb-6">
         <h1 className="font-display font-bold text-3xl sm:text-4xl tracking-tight text-l-text dark:text-gray-100">
-          Vulnerability{" "}
-          <span className="text-acid">Intelligence</span>
+          Real-time vulnerability{" "}
+          <span className="text-acid">intelligence</span>{" "}
+          <span className="text-l-text dark:text-gray-100">for security teams</span>
         </h1>
         <p className="mt-1 font-mono text-sm text-l-sub dark:text-gray-500">
-          Real-time CVE monitoring · AI-enriched analysis · Priority scoring
+          Monitor CVEs that matter to your stack · Triage faster · Stay ahead of active exploits
         </p>
       </div>
 

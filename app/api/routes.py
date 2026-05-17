@@ -41,13 +41,27 @@ def _check_admin(
 _poller = None
 _telegram_bot = None
 _db = None
+_threat_actors_svc = None
+_ransomware_svc = None
+_ioc_svc = None
+_news_svc = None
+_breach_svc = None
 
 
-def init_routes(poller, telegram_bot, db=None) -> None:
+def init_routes(
+    poller, telegram_bot, db=None,
+    threat_actors=None, ransomware=None, ioc=None, news=None, breaches=None,
+) -> None:
     global _poller, _telegram_bot, _db
+    global _threat_actors_svc, _ransomware_svc, _ioc_svc, _news_svc, _breach_svc
     _poller = poller
     _telegram_bot = telegram_bot
     _db = db
+    _threat_actors_svc = threat_actors
+    _ransomware_svc = ransomware
+    _ioc_svc = ioc
+    _news_svc = news
+    _breach_svc = breaches
 
 
 # ── Health ────────────────────────────────────────────────────────────────────
@@ -91,6 +105,16 @@ async def list_cves(
             if direct:
                 return [direct]
 
+        # Dynamic fallback to NVD
+        if _poller:
+            try:
+                direct = await _poller.fetch_and_process_single(cve_id)
+                if direct:
+                    logger.info(f"Dynamically fetched and added {cve_id} from search bar")
+                    return [direct]
+            except Exception as e:
+                logger.error(f"Fallback fetch failed for {cve_id} in search: {e}")
+
     # Try Supabase first
     if _db and _db.is_configured:
         try:
@@ -103,10 +127,9 @@ async def list_cves(
                     limit=page_size,
                     min_priority=min_score or 0,
                     category=category,
+                    priority_label=priority,
                 )
             if db_cves:
-                if priority:
-                    db_cves = [c for c in db_cves if c.priority_label == priority.upper()]
                 if search:
                     q = search.lower()
                     db_cves = [
@@ -153,6 +176,38 @@ async def list_cves(
 # IMPORTANT: Fixed-path routes MUST come BEFORE the {cve_id} catch-all,
 # otherwise FastAPI matches "trending", "fresh", "category" as cve_id values.
 # ══════════════════════════════════════════════════════════════════════════════
+
+# ── CVE by Priority Label ────────────────────────────────────────────────────
+
+@router.get("/api/cves/priority/{label}", response_model=list[ProcessedCVE], tags=["CVEs"])
+async def get_cves_by_priority(
+    label: str,
+    limit: int = Query(50, ge=1, le=200),
+):
+    """Filter CVEs by priority severity label: CRITICAL, HIGH, MEDIUM, LOW."""
+    label_upper = label.upper()
+    if label_upper not in ("CRITICAL", "HIGH", "MEDIUM", "LOW"):
+        raise HTTPException(status_code=400, detail="Label must be CRITICAL, HIGH, MEDIUM, or LOW")
+
+    # Try Supabase first
+    if _db and _db.is_configured:
+        try:
+            db_cves = await _db.get_recent_cves(
+                limit=limit, min_priority=0, priority_label=label_upper,
+            )
+            if db_cves:
+                db_cves.sort(key=lambda c: c.priority_score, reverse=True)
+                return db_cves
+        except Exception as e:
+            logger.warning(f"Supabase priority query failed: {e}")
+
+    # Fallback to in-memory
+    if not _poller:
+        raise HTTPException(status_code=503, detail="Poller not initialized")
+
+    cves = [c for c in _poller.processed_cves if c.priority_label == label_upper]
+    cves.sort(key=lambda c: c.priority_score, reverse=True)
+    return cves[:limit]
 
 
 # ── CVE by Category ──────────────────────────────────────────────────────────
@@ -271,9 +326,84 @@ async def get_cve(cve_id: str):
         raise HTTPException(status_code=503, detail="Poller not initialized")
 
     cve = _poller.get_cve(cve_id_upper)
+    if cve:
+        return cve
+
+    # Dynamic fallback to NVD
+    try:
+        cve = await _poller.fetch_and_process_single(cve_id_upper)
+        if cve:
+            logger.info(f"Dynamically fetched and added {cve_id_upper} from NVD")
+            return cve
+    except Exception as e:
+        logger.error(f"Fallback fetch failed for {cve_id_upper}: {e}")
+
+    raise HTTPException(status_code=404, detail=f"CVE {cve_id} not found")
+
+
+# ── Re-explain CVE (Phase 5.5 backfill) ───────────────────────────────────────
+
+@router.post("/api/cves/{cve_id}/re-explain", tags=["AI Assistant"])
+async def re_explain_cve(cve_id: str):
+    """Force regenerate AI explanation for a single CVE with the Phase 5.5 prompt.
+    Used to backfill the new depth fields on existing cached records."""
+    cve_id_upper = cve_id.upper()
+
+    # Get the CVE from memory or DB
+    cve = None
+    if _poller:
+        cve = _poller.get_cve(cve_id_upper)
+    if not cve and _db and _db.is_configured:
+        cve = await _db.get_cve(cve_id_upper)
+
     if not cve:
         raise HTTPException(status_code=404, detail=f"CVE {cve_id} not found")
-    return cve
+
+    # Build a RawCVE proxy for the explainer
+    from app.models.cve import RawCVE
+    raw = RawCVE(
+        cve_id=cve.cve_id,
+        description=cve.description,
+        cvss_score=cve.cvss_score,
+        cvss_vector=cve.cvss_vector,
+        cvss_version=cve.cvss_version,
+        published_date=cve.published_date,
+        last_modified=cve.last_modified,
+        references=cve.references,
+        weaknesses=cve.weaknesses,
+    )
+
+    # Generate new explanation
+    from app.services.ai_explainer import GroqExplainer
+    explainer = GroqExplainer()
+    new_explanation = await explainer.explain_cve(
+        raw=raw,
+        enrichment=cve.enrichment,
+        priority_label=cve.priority_label,
+    )
+
+    # Update in-memory cache
+    if _poller:
+        for i, cached in enumerate(_poller._processed_cves):
+            if cached.cve_id == cve_id_upper:
+                _poller._processed_cves[i].ai_explanation = new_explanation
+                break
+
+    # Update in DB
+    if _db and _db.is_configured:
+        cve.ai_explanation = new_explanation
+        import asyncio
+        asyncio.create_task(_db.save_cve(cve))
+
+    return {
+        "status": "ok",
+        "cve_id": cve_id_upper,
+        "has_vulnerability_class_analysis": bool(new_explanation.vulnerability_class_analysis),
+        "has_adversarial_context": bool(new_explanation.adversarial_context),
+        "has_exploit_narrative": bool(new_explanation.exploit_narrative),
+        "has_attack_techniques": bool(new_explanation.attack_techniques and len(new_explanation.attack_techniques) > 0),
+        "attack_technique_count": len(new_explanation.attack_techniques) if new_explanation.attack_techniques else 0,
+    }
 
 
 # ── Threats ──────────────────────────────────────────────────────────────────
@@ -297,15 +427,26 @@ async def get_threats(
     if not _poller:
         raise HTTPException(status_code=503, detail="Poller not initialized")
 
-    cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=30)
+    recent_cutoff = now - timedelta(hours=48)
     cves = _poller.processed_cves
     threats = [
         c for c in cves
-        if (c.priority_score >= 75 or c.enrichment.in_kev)
+        if (c.priority_score >= 75 or c.enrichment.in_kev or "SUPPLY_CHAIN" in c.categories)
         and c.published_date
         and (c.published_date.replace(tzinfo=timezone.utc) if c.published_date.tzinfo is None else c.published_date) >= cutoff
     ]
-    threats.sort(key=lambda c: c.priority_score, reverse=True)
+
+    # Time-bucketed sort: last-48h first, then older
+    def _sort_key(c):
+        pub = c.published_date
+        if pub and pub.tzinfo is None:
+            pub = pub.replace(tzinfo=timezone.utc)
+        is_recent = 0 if (pub and pub >= recent_cutoff) else 1
+        return (is_recent, -c.priority_score)
+
+    threats.sort(key=_sort_key)
     return threats[:limit]
 
 
@@ -366,12 +507,14 @@ async def get_exploit_intel_feed(
         return []
 
     try:
+        # When filtering by nuclei, fetch extra rows since filtering happens
+        # post-join (nuclei info lives in enrichment, not exploit_intelligence)
+        fetch_limit = limit * 3 if has_nuclei else limit
         intel_rows = await _db.get_exploit_intel_feed(
-            limit=limit,
+            limit=fetch_limit,
             offset=offset,
             ems_label=ems_label,
             has_metasploit=has_metasploit,
-            has_nuclei=has_nuclei,
         )
 
         # Build summaries by joining with processed_cves data
@@ -392,6 +535,10 @@ async def get_exploit_intel_feed(
             if cve_data and cve_data.enrichment:
                 has_nuclei_template = cve_data.enrichment.has_nuclei_template
 
+            # Skip if nuclei filter is active but CVE has no nuclei template
+            if has_nuclei and not has_nuclei_template:
+                continue
+
             summaries.append(ExploitIntelSummary(
                 cve_id=cve_id,
                 ems_score=row.get("ems_score", 0),
@@ -411,6 +558,11 @@ async def get_exploit_intel_feed(
                     else ""
                 ),
             ))
+
+            # Stop once we have enough results
+            if len(summaries) >= limit:
+                break
+
         return summaries
     except Exception as e:
         logger.error(f"Exploit intel feed error: {e}")
@@ -664,3 +816,476 @@ async def get_notes(cve_id: str, limit: int = Query(default=20, le=50)):
     except Exception as e:
         logger.warning(f"Notes query failed: {e}")
         return []
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 5 — Threat Intelligence Endpoints
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+# ── Threat Actors ─────────────────────────────────────────────────────────────
+
+@router.get("/api/threat-actors", tags=["Threat Actors"])
+async def get_threat_actors(
+    active_only: bool = False,
+    motivation: Optional[str] = None,
+    sophistication: Optional[str] = None,
+):
+    """Returns all threat actor profiles."""
+    if not _threat_actors_svc:
+        return []
+    return await _threat_actors_svc.get_all_actors(active_only, motivation, sophistication)
+
+
+@router.get("/api/threat-actors/{slug}", tags=["Threat Actors"])
+async def get_threat_actor(slug: str):
+    """Returns full actor profile + list of CVEs they exploit."""
+    if not _threat_actors_svc:
+        raise HTTPException(status_code=503, detail="Service unavailable")
+    actor = await _threat_actors_svc.get_actor(slug)
+    if not actor:
+        raise HTTPException(status_code=404, detail="Actor not found")
+    return actor
+
+
+@router.get("/api/threat-actors/{slug}/cves", tags=["Threat Actors"])
+async def get_threat_actor_cves(slug: str):
+    """Returns all CVEs linked to this actor."""
+    if not _threat_actors_svc:
+        return []
+    return await _threat_actors_svc.get_cves_for_actor(slug)
+
+
+@router.get("/api/cves/{cve_id}/threat-actors", tags=["Threat Actors"])
+async def get_actors_for_cve(cve_id: str):
+    """Returns all threat actors known to exploit this CVE."""
+    if not _threat_actors_svc:
+        return []
+    return await _threat_actors_svc.get_actors_for_cve(cve_id)
+
+
+@router.post("/api/threat-actors/{slug}/cves", tags=["Threat Actors"])
+async def link_cve_to_actor(
+    slug: str,
+    cve_id: str = Query(...),
+    confirmed: bool = Query(default=False),
+    source_url: str = Query(default=""),
+    notes: str = Query(default=""),
+    admin: bool = Depends(_check_admin),
+):
+    """Links a CVE to a threat actor (admin auth required)."""
+    if not _threat_actors_svc:
+        raise HTTPException(status_code=503, detail="Service unavailable")
+    await _threat_actors_svc.link_cve_to_actor(slug, cve_id.upper(), confirmed, source_url, notes)
+    return {"status": "linked", "actor": slug, "cve": cve_id.upper()}
+
+
+# ── Ransomware Tracker ────────────────────────────────────────────────────────
+
+@router.get("/api/ransomware/campaigns", tags=["Ransomware"])
+async def get_ransomware_campaigns(
+    status: Optional[str] = None, actor_slug: Optional[str] = None,
+):
+    """Returns ransomware campaigns, optionally filtered."""
+    if not _ransomware_svc:
+        return []
+    return await _ransomware_svc.get_active_campaigns(status, actor_slug)
+
+
+@router.get("/api/ransomware/matrix", tags=["Ransomware"])
+async def get_ransomware_matrix():
+    """Returns ransomware group → CVEs matrix for the tracker table."""
+    if not _ransomware_svc:
+        return []
+    return await _ransomware_svc.get_ransomware_cve_matrix()
+
+
+@router.get("/api/ransomware/by-cve/{cve_id}", tags=["Ransomware"])
+async def get_ransomware_by_cve(cve_id: str):
+    """Returns which ransomware groups have used this CVE."""
+    if not _ransomware_svc:
+        return []
+    return await _ransomware_svc.get_ransomware_by_cve(cve_id)
+
+
+# ── IOC Pulse ─────────────────────────────────────────────────────────────────
+
+@router.get("/api/ioc/lookup", tags=["IOC"])
+async def lookup_ioc(q: str = Query(..., description="IP, domain, URL, or hash to look up")):
+    """Auto-detects indicator type, returns full intelligence report. Cached 6h."""
+    if not _ioc_svc:
+        return {"error": "IOC service unavailable"}
+    return await _ioc_svc.lookup(q)
+
+
+@router.get("/api/ioc/feed", tags=["IOC"])
+async def get_ioc_feed():
+    """Returns latest 50 IOCs from ThreatFox. Cached 30 min."""
+    if not _ioc_svc:
+        return []
+    return await _ioc_svc.get_live_ioc_feed()
+
+
+@router.get("/api/ioc/stats", tags=["IOC"])
+async def get_ioc_stats():
+    """Returns IOC service stats: total lookups, cache hit rate, etc."""
+    if not _ioc_svc:
+        return {}
+    return _ioc_svc.get_stats()
+
+
+# ── Security News ─────────────────────────────────────────────────────────────
+
+@router.get("/api/news", tags=["News"])
+async def get_news(
+    limit: int = Query(default=20, le=100),
+    source: Optional[str] = None,
+    has_cves: bool = False,
+):
+    """Returns recent news articles."""
+    if not _db or not _db.is_configured:
+        return []
+    try:
+        q = _db._client.table("security_news").select("*")
+        if source:
+            q = q.eq("source", source)
+        if has_cves:
+            q = q.not_("mentioned_cves", "eq", "{}")
+        res = q.order("published_at", desc=True).limit(limit).execute()
+        
+        import html
+        data = res.data or []
+        for item in data:
+            if item.get("title"):
+                item["title"] = html.unescape(item["title"])
+            if item.get("summary"):
+                item["summary"] = html.unescape(item["summary"])
+        return data
+    except Exception as e:
+        logger.error(f"News fetch failed: {e}")
+        return []
+
+
+@router.get("/api/news/cve/{cve_id}", tags=["News"])
+async def get_news_for_cve(cve_id: str):
+    """Returns all news articles mentioning this CVE."""
+    if not _news_svc:
+        return []
+    return await _news_svc.get_articles_for_cve(cve_id)
+
+
+@router.get("/api/news/briefing", tags=["News"])
+async def get_news_briefing():
+    """Returns today's AI-generated daily briefing."""
+    if not _news_svc:
+        return {"briefing": "News service not available."}
+    text = await _news_svc.get_daily_briefing()
+    return {"briefing": text}
+
+
+@router.get("/api/news/sources", tags=["News"])
+async def get_news_sources():
+    """Returns list of configured RSS sources with article counts."""
+    if not _news_svc:
+        return []
+    return await _news_svc.get_sources()
+
+
+# ── Breach Intelligence ───────────────────────────────────────────────────────
+
+@router.get("/api/breaches", tags=["Breaches"])
+async def get_breaches(
+    limit: int = Query(default=20, le=100),
+    actor_slug: Optional[str] = None,
+    cve_id: Optional[str] = None,
+    verified_only: bool = True,
+    category: Optional[str] = None,
+):
+    """Returns breach records sorted by breach_date desc."""
+    if not _breach_svc:
+        return []
+    return await _breach_svc.get_breaches(
+        cve_id=cve_id, actor_slug=actor_slug, limit=limit, verified_only=verified_only, category=category,
+    )
+
+
+@router.get("/api/breaches/search", tags=["Breaches"])
+async def search_breaches(q: str = Query(..., description="Company name to search")):
+    """Case-insensitive search for company name in breach records."""
+    if not _breach_svc:
+        return []
+    return await _breach_svc.search_breaches(q)
+
+
+@router.get("/api/breaches/cve/{cve_id}", tags=["Breaches"])
+async def get_breaches_for_cve(cve_id: str):
+    """Returns all breaches where this CVE was used for initial access."""
+    if not _breach_svc:
+        return []
+    return await _breach_svc.get_breaches_for_cve(cve_id)
+
+
+@router.get("/api/breaches/stats", tags=["Breaches"])
+async def get_breach_stats(
+    category: Optional[str] = None,
+    q: Optional[str] = None,
+):
+    """Returns aggregate breach statistics."""
+    if not _breach_svc:
+        return {}
+    return await _breach_svc.get_breach_stats(category=category, query=q)
+
+
+@router.post("/api/breaches", tags=["Breaches"])
+async def add_breach(
+    request: Request,
+    admin: bool = Depends(_check_admin),
+):
+    """Manually add a verified breach entry (admin auth required)."""
+    if not _breach_svc:
+        raise HTTPException(status_code=503, detail="Service unavailable")
+    body = await request.json()
+    if not _db or not _db.is_configured:
+        raise HTTPException(status_code=503, detail="Database not configured")
+    try:
+        _db._client.table("breach_intelligence").insert(body).execute()
+        return {"status": "created"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── CVE Full Context (aggregates Phase 5 data) ───────────────────────────────
+
+@router.get("/api/cves/{cve_id}/full", tags=["CVEs"])
+async def get_cve_full(cve_id: str):
+    """
+    Returns { cve: ProcessedCVE, context: CVEContext } — enriched CVE with
+    threat actors, ransomware, news, and breach context.
+    Backward compatible: GET /api/cves/{cve_id} remains unchanged.
+    """
+    cve_id = cve_id.upper()
+
+    # Get the CVE itself (from poller memory, then DB fallback)
+    cve = _poller.get_cve(cve_id) if _poller else None
+    if not cve and _db and _db.is_configured:
+        cve = await _db.get_cve(cve_id)
+    if not cve:
+        # Dynamic fallback to NVD
+        if _poller:
+            try:
+                cve = await _poller.fetch_and_process_single(cve_id)
+                if cve:
+                    logger.info(f"Dynamically fetched and added {cve_id} from NVD for /full context")
+            except Exception as e:
+                logger.error(f"Fallback fetch failed for {cve_id}: {e}")
+
+        if not cve:
+            raise HTTPException(status_code=404, detail=f"{cve_id} not found")
+
+    # Fire all context queries concurrently
+    async def _empty_list(): return []
+
+    actor_task = _threat_actors_svc.get_actors_for_cve(cve_id) if _threat_actors_svc else _empty_list()
+    ransom_task = _ransomware_svc.get_ransomware_by_cve(cve_id) if _ransomware_svc else _empty_list()
+    news_task = _news_svc.get_articles_for_cve(cve_id) if _news_svc else _empty_list()
+    breach_task = _breach_svc.get_breaches_for_cve(cve_id) if _breach_svc else _empty_list()
+
+    actors, ransomware_groups, news_articles, breaches = await asyncio.gather(
+        actor_task, ransom_task, news_task, breach_task,
+        return_exceptions=True,
+    )
+
+    return {
+        "cve": cve.model_dump() if hasattr(cve, "model_dump") else cve,
+        "context": {
+            "threat_actors": actors if not isinstance(actors, Exception) else [],
+            "ransomware_groups": ransomware_groups if not isinstance(ransomware_groups, Exception) else [],
+            "news_articles": news_articles if not isinstance(news_articles, Exception) else [],
+            "breaches": breaches if not isinstance(breaches, Exception) else [],
+        },
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 5.5 — Interactive CVE Assistant
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+@router.post("/api/cve-assistant", tags=["AI Assistant"])
+async def cve_assistant(request: Request):
+    """
+    Backend proxy for the interactive CVE assistant.
+    Accepts { cve_id, message, history: [{role, content}] }.
+    Injects CVE context as system prompt, forwards to Groq/Cerebras/Gemini.
+    """
+    body = await request.json()
+    cve_id = (body.get("cve_id") or "").upper()
+    user_message = (body.get("message") or "").strip()
+    history = body.get("history") or []
+
+    if not cve_id or not user_message:
+        raise HTTPException(status_code=400, detail="cve_id and message are required")
+
+    # Limit history to last 5 exchanges to control context size
+    history = history[-10:]  # 5 user + 5 assistant messages max
+
+    # Load CVE data for context
+    cve = None
+    if _poller:
+        cve = _poller.get_cve(cve_id)
+    if not cve and _db and _db.is_configured:
+        cve = await _db.get_cve(cve_id)
+
+    if not cve:
+        raise HTTPException(status_code=404, detail=f"CVE {cve_id} not found")
+
+    # Build system prompt with CVE context
+    ai = cve.ai_explanation
+    context_parts = [
+        f"You are KnowCVE's interactive threat analyst assistant. You are answering follow-up questions about {cve_id}.",
+        f"Be concise and technical. Keep responses under 300 words. Answer ONLY within the scope of this CVE.",
+        f"\n--- CVE CONTEXT ---",
+        f"CVE ID: {cve_id}",
+        f"CVSS: {cve.cvss_score} ({cve.cvss_version})",
+        f"Description: {cve.description}",
+        f"Weaknesses: {', '.join(cve.weaknesses) if cve.weaknesses else 'N/A'}",
+        f"CISA KEV: {cve.enrichment.in_kev}",
+        f"EPSS: {cve.enrichment.epss_score:.4f}",
+    ]
+    if ai:
+        context_parts.append(f"Technical Detail: {ai.technical_detail}")
+        if ai.exploit_narrative:
+            context_parts.append(f"Exploit Narrative: {ai.exploit_narrative}")
+        if ai.vulnerability_class_analysis:
+            context_parts.append(f"Vulnerability Class Analysis: {ai.vulnerability_class_analysis}")
+        if ai.adversarial_context:
+            context_parts.append(f"Adversarial Context: {ai.adversarial_context}")
+        if ai.attack_techniques:
+            techniques_str = ", ".join(
+                f"{t.technique_id} ({t.technique_name})" for t in ai.attack_techniques
+            )
+            context_parts.append(f"ATT&CK Chain: {techniques_str}")
+    context_parts.append("--- END CONTEXT ---")
+
+    system_prompt = "\n".join(context_parts)
+
+    # Build messages
+    messages = [{"role": "system", "content": system_prompt}]
+    for msg in history:
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+        if role in ("user", "assistant") and content:
+            messages.append({"role": role, "content": content})
+    messages.append({"role": "user", "content": user_message})
+
+    # Try Groq → Cerebras → Gemini
+    reply = None
+    providers = []
+
+    if settings.GROQ_API_KEY:
+        providers.append(("groq", settings.GROQ_API_KEY))
+    if settings.CEREBRAS_API_KEY:
+        providers.append(("cerebras", settings.CEREBRAS_API_KEY))
+    if settings.GEMINI_API_KEY:
+        providers.append(("gemini", settings.GEMINI_API_KEY))
+
+    for provider_name, api_key in providers:
+        try:
+            if provider_name == "groq":
+                from groq import AsyncGroq
+                client = AsyncGroq(api_key=api_key)
+                completion = await client.chat.completions.create(
+                    model="llama-3.3-70b-versatile",
+                    messages=messages,
+                    temperature=0.4,
+                    max_tokens=800,
+                )
+                reply = completion.choices[0].message.content
+                break
+            elif provider_name == "cerebras":
+                from cerebras.cloud.sdk import AsyncCerebras
+                client = AsyncCerebras(api_key=api_key)
+                completion = await client.chat.completions.create(
+                    model="llama3.3-70b",
+                    messages=messages,
+                    temperature=0.4,
+                    max_tokens=800,
+                )
+                reply = completion.choices[0].message.content
+                break
+            elif provider_name == "gemini":
+                from google import genai
+                from google.genai import types
+                client = genai.Client(api_key=api_key)
+                full_prompt = system_prompt + "\n\n" + "\n".join(
+                    f"{'User' if m['role'] == 'user' else 'Assistant'}: {m['content']}"
+                    for m in messages[1:]
+                )
+                response = await client.aio.models.generate_content(
+                    model="gemini-2.0-flash",
+                    contents=full_prompt,
+                    config=types.GenerateContentConfig(
+                        temperature=0.4,
+                        max_output_tokens=800,
+                    ),
+                )
+                reply = response.text
+                break
+        except Exception as e:
+            logger.warning(f"CVE assistant {provider_name} failed: {e}")
+            continue
+
+    if not reply:
+        raise HTTPException(status_code=503, detail="All AI providers unavailable")
+
+    return {"reply": reply}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Supply Chain Advisories
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+@router.get("/api/advisories/supply-chain", tags=["Advisories"])
+async def get_supply_chain_advisories(
+    ecosystem: Optional[str] = Query(default=None, description="Filter by ecosystem: npm, pip, go"),
+    limit: int = Query(default=20, le=50),
+):
+    """Returns recent supply chain / malware advisories from GitHub Advisory DB + OSV.dev.
+
+    These advisories cover package ecosystem threats that may not yet have NVD CVE entries,
+    including malicious packages, account hijacks, backdoors, and dependency confusion attacks.
+    """
+    if not _db or not _db.is_configured:
+        return []
+
+    try:
+        alerts = await _db.get_supply_chain_alerts(
+            ecosystem=ecosystem,
+            limit=limit,
+        )
+        return alerts
+    except Exception as e:
+        logger.error(f"Supply chain advisories error: {e}")
+        return []
+
+
+@router.get("/api/cves/category/SUPPLY_CHAIN", response_model=list[ProcessedCVE], tags=["CVEs"])
+async def get_supply_chain_cves(
+    limit: int = Query(20, ge=1, le=100),
+):
+    """CVEs flagged as supply chain threats (malicious packages, backdoors, etc.)."""
+    if _db and _db.is_configured:
+        try:
+            db_cves = await _db.get_cves_by_category("SUPPLY_CHAIN", limit=limit)
+            if db_cves is not None:
+                return db_cves
+        except Exception as e:
+            logger.warning(f"Supabase supply chain query failed: {e}")
+
+    if not _poller:
+        return []
+
+    cves = [c for c in _poller.processed_cves if "SUPPLY_CHAIN" in c.categories]
+    cves.sort(key=lambda c: c.priority_score, reverse=True)
+    return cves[:limit]

@@ -19,11 +19,22 @@ interface MetricCardProps {
   value: string | number;
   subtitle?: string;
   accent?: string;
+  onClick?: () => void;
+  clickable?: boolean;
 }
 
-function MetricCard({ icon, label, value, subtitle, accent }: MetricCardProps) {
+function MetricCard({ icon, label, value, subtitle, accent, onClick, clickable }: MetricCardProps) {
+  const Wrapper = clickable ? "button" : "div";
   return (
-    <div className="card px-4 py-3 animate-fade-in">
+    <Wrapper
+      className={`card px-4 py-3 animate-fade-in text-left transition-all ${
+        clickable
+          ? "cursor-pointer hover:ring-1 hover:ring-acid/30 hover:shadow-lg hover:shadow-acid/5 active:scale-[0.98]"
+          : ""
+      }`}
+      onClick={onClick}
+      title={clickable ? `Click to filter by ${label}` : undefined}
+    >
       <div className="flex items-center gap-2 mb-1">
         <span className={accent || "text-l-sub dark:text-gray-500"}>
           {icon}
@@ -40,7 +51,12 @@ function MetricCard({ icon, label, value, subtitle, accent }: MetricCardProps) {
           {subtitle}
         </div>
       )}
-    </div>
+      {clickable && (
+        <div className="text-[9px] font-mono text-acid/60 mt-1">
+          ▸ click to filter
+        </div>
+      )}
+    </Wrapper>
   );
 }
 
@@ -51,6 +67,13 @@ function SkeletonCard() {
       <div className="skeleton h-8 w-16 mb-1" />
       <div className="skeleton h-3 w-24" />
     </div>
+  );
+}
+
+/** Dispatches a custom event that CVEFeed listens for to set the priority filter */
+function scrollToFeedWithPriority(priority: string) {
+  window.dispatchEvent(
+    new CustomEvent("knowcve:set-priority", { detail: priority })
   );
 }
 
@@ -112,6 +135,8 @@ export default function StatsBar() {
         value={stats.critical_count}
         subtitle={`${stats.high_count} high`}
         accent="text-red-400"
+        clickable
+        onClick={() => scrollToFeedWithPriority("CRITICAL")}
       />
       <MetricCard
         icon={<Hash className="h-3.5 w-3.5" />}
@@ -119,6 +144,8 @@ export default function StatsBar() {
         value={stats.medium_count}
         subtitle={`${stats.low_count} low`}
         accent="text-yellow-300"
+        clickable
+        onClick={() => scrollToFeedWithPriority("MEDIUM")}
       />
       <MetricCard
         icon={<Clock className="h-3.5 w-3.5" />}

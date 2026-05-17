@@ -9,6 +9,14 @@ import type {
   NucleiInfo,
   ExploitIntelligence,
   ExploitIntelSummary,
+  ThreatActor,
+  ThreatActorDetail,
+  RansomwareCampaign,
+  IOCResult,
+  IOCFeedEntry,
+  SecurityNewsItem,
+  BreachRecord,
+  FullCVEContext,
 } from "@/types/cve";
 
 const API_BASE =
@@ -45,6 +53,7 @@ export async function getCVEs(params?: {
   priority?: string;
   min_score?: number;
   category?: string;
+  search?: string;
 }): Promise<ProcessedCVE[]> {
   const sp = new URLSearchParams();
   if (params?.page) sp.set("page", String(params.page));
@@ -52,6 +61,7 @@ export async function getCVEs(params?: {
   if (params?.priority) sp.set("priority", params.priority);
   if (params?.min_score !== undefined) sp.set("min_score", String(params.min_score));
   if (params?.category) sp.set("category", params.category);
+  if (params?.search) sp.set("search", params.search);
   const qs = sp.toString();
   return apiFetch<ProcessedCVE[]>(`/api/cves${qs ? `?${qs}` : ""}`);
 }
@@ -181,4 +191,135 @@ export async function getExploitIntel(
   return apiFetch<ExploitIntelligence>(
     `/api/exploit-intel/${encodeURIComponent(cveId)}`
   );
+}
+
+/* ── Phase 5 — Threat Intelligence ──────────────── */
+
+// — Threat Actors —
+
+export async function getThreatActors(params?: {
+  active_only?: boolean;
+  motivation?: string;
+  sophistication?: string;
+}): Promise<ThreatActor[]> {
+  const sp = new URLSearchParams();
+  if (params?.active_only) sp.set("active_only", "true");
+  if (params?.motivation) sp.set("motivation", params.motivation);
+  if (params?.sophistication) sp.set("sophistication", params.sophistication);
+  const qs = sp.toString();
+  return apiFetch<ThreatActor[]>(`/api/threat-actors${qs ? `?${qs}` : ""}`);
+}
+
+export async function getThreatActor(slug: string): Promise<ThreatActorDetail> {
+  return apiFetch<ThreatActorDetail>(`/api/threat-actors/${encodeURIComponent(slug)}`);
+}
+
+export async function getThreatActorCVEs(slug: string): Promise<unknown[]> {
+  return apiFetch<unknown[]>(`/api/threat-actors/${encodeURIComponent(slug)}/cves`);
+}
+
+export async function getCVEThreatActors(cveId: string): Promise<ThreatActor[]> {
+  return apiFetch<ThreatActor[]>(`/api/cves/${encodeURIComponent(cveId)}/threat-actors`);
+}
+
+// — Ransomware —
+
+export async function getRansomwareCampaigns(params?: {
+  status?: string;
+  actor_slug?: string;
+}): Promise<RansomwareCampaign[]> {
+  const sp = new URLSearchParams();
+  if (params?.status) sp.set("status", params.status);
+  if (params?.actor_slug) sp.set("actor_slug", params.actor_slug);
+  const qs = sp.toString();
+  return apiFetch<RansomwareCampaign[]>(`/api/ransomware/campaigns${qs ? `?${qs}` : ""}`);
+}
+
+export async function getRansomwareMatrix(): Promise<RansomwareCampaign[]> {
+  return apiFetch<RansomwareCampaign[]>("/api/ransomware/matrix");
+}
+
+// — IOC —
+
+export async function lookupIOC(indicator: string): Promise<IOCResult> {
+  return apiFetch<IOCResult>(`/api/ioc/lookup?q=${encodeURIComponent(indicator)}`);
+}
+
+export async function getIOCFeed(): Promise<IOCFeedEntry[]> {
+  return apiFetch<IOCFeedEntry[]>("/api/ioc/feed");
+}
+
+export async function getIOCStats(): Promise<Record<string, unknown>> {
+  return apiFetch<Record<string, unknown>>("/api/ioc/stats");
+}
+
+// — News —
+
+export async function getSecurityNews(params?: {
+  limit?: number;
+  source?: string;
+  has_cves?: boolean;
+}): Promise<SecurityNewsItem[]> {
+  const sp = new URLSearchParams();
+  if (params?.limit) sp.set("limit", String(params.limit));
+  if (params?.source) sp.set("source", params.source);
+  if (params?.has_cves) sp.set("has_cves", "true");
+  const qs = sp.toString();
+  return apiFetch<SecurityNewsItem[]>(`/api/news${qs ? `?${qs}` : ""}`);
+}
+
+export async function getNewsBriefing(): Promise<{ briefing: string }> {
+  return apiFetch<{ briefing: string }>("/api/news/briefing");
+}
+
+export async function getNewsSources(): Promise<{ name: string; url: string; article_count: number }[]> {
+  return apiFetch<{ name: string; url: string; article_count: number }[]>("/api/news/sources");
+}
+
+// — Breaches —
+
+export async function getBreaches(params?: {
+  limit?: number;
+  actor_slug?: string;
+  cve_id?: string;
+  category?: string;
+}): Promise<BreachRecord[]> {
+  const sp = new URLSearchParams();
+  if (params?.limit) sp.set("limit", String(params.limit));
+  if (params?.actor_slug) sp.set("actor_slug", params.actor_slug);
+  if (params?.cve_id) sp.set("cve_id", params.cve_id);
+  if (params?.category) sp.set("category", params.category);
+  const qs = sp.toString();
+  return apiFetch<BreachRecord[]>(`/api/breaches${qs ? `?${qs}` : ""}`);
+}
+
+export async function searchBreaches(query: string): Promise<BreachRecord[]> {
+  return apiFetch<BreachRecord[]>(`/api/breaches/search?q=${encodeURIComponent(query)}`);
+}
+
+export async function getBreachStats(params?: { category?: string; query?: string }): Promise<Record<string, unknown>> {
+  const sp = new URLSearchParams();
+  if (params?.category) sp.set("category", params.category);
+  if (params?.query) sp.set("q", params.query);
+  const qs = sp.toString();
+  return apiFetch<Record<string, unknown>>(`/api/breaches/stats${qs ? `?${qs}` : ""}`);
+}
+
+// — CVE Full Context —
+
+export async function getCVEFull(cveId: string): Promise<FullCVEContext> {
+  return apiFetch<FullCVEContext>(`/api/cves/${encodeURIComponent(cveId)}/full`);
+}
+
+// — Phase 5.5: CVE Assistant —
+
+export async function askCVEAssistant(
+  cveId: string,
+  message: string,
+  history: Array<{ role: string; content: string }>
+): Promise<{ reply: string }> {
+  return apiFetch<{ reply: string }>('/api/cve-assistant', {
+    method: 'POST',
+    body: JSON.stringify({ cve_id: cveId, message, history }),
+  });
 }

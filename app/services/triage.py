@@ -49,7 +49,7 @@ LABEL_LOW = "LOW"
 
 # ── Thresholds ───────────────────────────────────────────────────────────────
 THRESHOLD_ALERT = 25          # alert on MEDIUM+
-THRESHOLD_AI_EXPLAIN = 50     # only spend tokens explaining HIGH+ or KEV
+
 
 
 def _score_to_label(score: int) -> str:
@@ -138,6 +138,18 @@ def _assign_categories(
     if "AV:N" in vector and "PR:N" in vector:
         categories.append("NO_AUTH_REQUIRED")
 
+    # SUPPLY_CHAIN: keyword-based heuristic for supply chain attacks
+    supply_chain_keywords = [
+        "supply chain", "malicious package", "backdoor", "typosquat",
+        "dependency confusion", "postinstall", "preinstall",
+        "malicious dependency", "account hijack", "npm account",
+        "pypi account", "trojanized", "rat payload",
+    ]
+    desc_lower = raw.description.lower()
+    if any(kw in desc_lower for kw in supply_chain_keywords):
+        if "SUPPLY_CHAIN" not in categories:
+            categories.append("SUPPLY_CHAIN")
+
     return categories
 
 
@@ -177,23 +189,14 @@ class TriageEngine:
 
         # Step 2: Generate explanation if not cached
         if explanation is None:
-            if priority_score >= THRESHOLD_AI_EXPLAIN or enrichment.in_kev:
-                try:
-                    explanation = await self.explainer.explain_cve(
-                        raw, enrichment, priority_label=priority_label
-                    )
-                    logger.info(f"AI explanation generated for {raw.cve_id} (score {priority_score})")
-                    await asyncio.sleep(0.3)
-                except Exception as e:
-                    logger.error(f"AI explanation failed for {raw.cve_id}: {e}")
-                    explanation = self.explainer.generate_lightweight_explanation(
-                        raw, enrichment
-                    )
-            else:
-                logger.info(
-                    f"Lightweight explanation for {raw.cve_id} "
-                    f"(score {priority_score} — below AI threshold)"
+            try:
+                explanation = await self.explainer.explain_cve(
+                    raw, enrichment, priority_label=priority_label
                 )
+                logger.info(f"AI explanation generated for {raw.cve_id} (score {priority_score})")
+                await asyncio.sleep(0.3)
+            except Exception as e:
+                logger.error(f"AI explanation failed for {raw.cve_id}: {e}")
                 explanation = self.explainer.generate_lightweight_explanation(
                     raw, enrichment
                 )
@@ -259,6 +262,13 @@ class TriageEngine:
         categories = _assign_categories(
             raw, enrichment, total_score, previous_epss, previous_scanner_count
         )
+
+        # ── Supply chain bonus ───────────────────────────────────────
+        # Supply chain attacks are high-impact even with low/pending CVSS
+        # because they directly compromise developer machines and CI/CD
+        if "SUPPLY_CHAIN" in categories:
+            total_score = min(100, total_score + 10)
+            label = _score_to_label(total_score)
 
         return total_score, label, categories
 

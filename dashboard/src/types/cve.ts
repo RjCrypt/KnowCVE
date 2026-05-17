@@ -18,6 +18,15 @@ export interface EnrichmentData {
   nuclei_template_url?: string;
 }
 
+export interface AttackTechnique {
+  technique_id: string;
+  technique_name: string;
+  tactic: string;
+  tactic_phase: number;
+  description: string;
+  is_pivot: boolean;
+}
+
 export interface AIExplanation {
   summary: string;
   technical_detail: string;
@@ -31,6 +40,11 @@ export interface AIExplanation {
     tactic: string;
     url: string;
   }>;
+  // Phase 5.5 — AI Depth Upgrade fields
+  vulnerability_class_analysis?: string;
+  adversarial_context?: string;
+  exploit_narrative?: string;
+  attack_techniques?: AttackTechnique[];
 }
 
 export interface CVEReference {
@@ -176,3 +190,124 @@ export interface ExploitIntelSummary {
   description: string;
   published: string;
 }
+
+// ── Phase 5: Threat Intelligence Types ──────────────────────────────────────
+
+export interface ThreatActor {
+  id?: number;
+  slug: string;
+  name: string;
+  aliases: string[];
+  origin_country?: string;
+  motivation: string;
+  sophistication: string;
+  description: string;
+  targeted_sectors: string[];
+  targeted_countries: string[];
+  mitre_group_id?: string;
+  mitre_url?: string;
+  first_seen?: string;
+  last_active?: string;
+  is_active: boolean;
+  cve_count?: number;
+}
+
+export interface ThreatActorDetail extends ThreatActor {
+  exploited_cves: Array<{
+    cve_id: string;
+    confirmed: boolean;
+    notes?: string;
+    source_url?: string;
+  }>;
+}
+
+export interface RansomwareCampaign {
+  id?: number;
+  actor_slug: string;
+  actor_name?: string;
+  campaign_name: string;
+  cve_ids: string[];
+  cves?: string[]; // alias for cve_ids in matrix view
+  sectors: string[];
+  countries: string[];
+  status: "active" | "recent" | "historical";
+  description: string;
+  motivation?: string;
+  origin_country?: string;
+  source_url?: string;
+}
+
+export interface IOCResult {
+  indicator: string;
+  ioc_type: "ip" | "domain" | "url" | "hash";
+  verdict: "malicious" | "suspicious" | "clean" | "unknown";
+  risk_score: number;
+  sources: {
+    threatfox?: { hit: boolean; malware_family?: string; tags?: string[] };
+    abuseipdb?: {
+      confidence: number;
+      reports: number;
+      country?: string;
+      isp?: string;
+    };
+    urlhaus?: { status?: string; tags?: string[]; urls_count?: number };
+    greynoise?: {
+      noise: boolean;
+      riot: boolean;
+      classification?: string;
+      name?: string;
+    };
+  };
+  related_cves: string[];
+  cached: boolean;
+}
+
+export interface IOCFeedEntry {
+  indicator: string;
+  ioc_type: string;
+  malware_family: string;
+  tags: string[];
+  threat_type: string;
+  reported_at: string;
+}
+
+export interface SecurityNewsItem {
+  id: number;
+  title: string;
+  url: string;
+  source: string;
+  published_at: string;
+  summary?: string;
+  mentioned_cves: string[];
+  mentioned_actors: string[];
+  tags: string[];
+}
+
+export interface BreachRecord {
+  id: number;
+  company_name: string;
+  breach_date?: string;
+  disclosed_date?: string;
+  actor_slug?: string;
+  actor_name?: string;
+  cve_ids: string[];
+  data_exposed: string[];
+  records_count?: number;
+  sectors: string[];
+  description: string;
+  source_urls: string[];
+  verified: boolean;
+}
+
+export interface CVEContext {
+  threat_actors: ThreatActor[];
+  ransomware_groups: RansomwareCampaign[];
+  news_articles: SecurityNewsItem[];
+  breaches: BreachRecord[];
+}
+
+export interface FullCVEContext {
+  cve: ProcessedCVE;
+  context: CVEContext;
+}
+

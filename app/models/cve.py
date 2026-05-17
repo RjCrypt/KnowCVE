@@ -48,10 +48,23 @@ class EnrichmentData(BaseModel):
     nuclei_template_url: Optional[str] = None
 
 
+# ── ATT&CK Technique (Phase 5.5) ─────────────────────────────────────────────
+
+class AttackTechnique(BaseModel):
+    """A single MITRE ATT&CK technique in a CVE-specific kill chain."""
+
+    technique_id: str = ""          # "T1190"
+    technique_name: str = ""        # "Exploit Public-Facing Application"
+    tactic: str = ""                # "Initial Access"
+    tactic_phase: int = 1           # 1-12 ordering per ATT&CK tactic order
+    description: str = ""           # CVE-specific application of this technique
+    is_pivot: bool = False          # True if this is the key exploitation step
+
+
 # ── AI Explanation ────────────────────────────────────────────────────────────
 
 class AIExplanation(BaseModel):
-    """Groq-generated 4-layer explanation of a CVE."""
+    """AI-generated threat intelligence explanation of a CVE."""
 
     summary: str = ""
     technical_detail: str = ""
@@ -61,6 +74,12 @@ class AIExplanation(BaseModel):
     affected_tech: list[str] = Field(default_factory=list)
     mitre_techniques: list[dict] = Field(default_factory=list)
     # Each dict: {"technique_id": "T1190", "technique_name": "...", "tactic": "...", "url": "..."}
+
+    # Phase 5.5 — AI Depth Upgrade fields
+    vulnerability_class_analysis: Optional[str] = None
+    adversarial_context: Optional[str] = None
+    exploit_narrative: Optional[str] = None
+    attack_techniques: Optional[list[AttackTechnique]] = None
 
 
 # ── Processed CVE ─────────────────────────────────────────────────────────────
@@ -86,11 +105,17 @@ class ProcessedCVE(BaseModel):
 
     # Dynamic scoring & categorisation (new)
     categories: list[str] = Field(default_factory=list)
-    # e.g. ["ACTIVELY_EXPLOITED", "TRENDING", "JUST_DROPPED"]
+    # e.g. ["ACTIVELY_EXPLOITED", "TRENDING", "JUST_DROPPED", "SUPPLY_CHAIN"]
     dynamic_score: int = 0
     # the momentum/dynamic portion of the score
     last_rescored_at: Optional[datetime] = None
     # when this CVE was last re-evaluated
+
+    # Advisory source tracking (supply chain detection)
+    ghsa_id: Optional[str] = None
+    ecosystem: Optional[str] = None          # "npm", "PyPI", etc.
+    is_malware_advisory: bool = False        # True for supply chain malware
+    affected_packages: list[dict] = Field(default_factory=list)
 
     # KRS (KnowCVE Risk Score) aliases — Phase 4
     @property
@@ -239,4 +264,25 @@ class ExploitIntelSummary(BaseModel):
     cvss_score: float
     description: str
     published: str
+
+
+# ── Advisory Feed (Supply Chain Detection) ────────────────────────────────────
+
+class AdvisoryRecord(BaseModel):
+    """A security advisory from GitHub Advisory Database or OSV.dev."""
+
+    ghsa_id: Optional[str] = None           # e.g., "GHSA-xxxx-xxxx-xxxx"
+    cve_id: Optional[str] = None            # may be None for malware advisories
+    source: str = "github"                  # "github" or "osv"
+    ecosystem: str = "npm"                  # "npm", "PyPI", "Go", etc.
+    severity: str = "unknown"               # "critical", "high", "medium", "low"
+    summary: str = ""
+    description: str = ""
+    affected_packages: list[dict] = Field(default_factory=list)
+    # Each dict: {"name": str, "ecosystem": str, "version_range": str}
+    references: list[str] = Field(default_factory=list)
+    published_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    is_malware: bool = False                # True for supply chain / malware advisories
+    withdrawn: bool = False                 # True if advisory was withdrawn
 

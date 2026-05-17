@@ -91,10 +91,10 @@ export default function KRSPage() {
         <div>
           <h1 className="text-2xl font-display font-bold text-l-text dark:text-gray-100">
             KnowCVE Risk Score{" "}
-            <span className="text-acid">(KRS)</span>
+            <span className="text-acid">— How We Prioritize What Matters</span>
           </h1>
           <p className="text-sm text-l-sub dark:text-gray-400">
-            An open, transparent composite score for real-world exploitation risk
+            An open, transparent composite score that helps defenders prioritize real-world exploitation risk
           </p>
         </div>
       </div>
@@ -116,25 +116,26 @@ export default function KRSPage() {
         </h2>
         <div className="space-y-3 text-sm text-l-sub dark:text-gray-400 leading-relaxed">
           <p>
-            CVSS alone doesn&apos;t tell the full story. A{" "}
+            As a defender, you don&apos;t have time to patch everything. CVSS alone doesn&apos;t tell you{" "}
+            <em>what attackers are actually using right now</em>. A{" "}
             <strong className="text-l-text dark:text-gray-200">
               CVSS 9.8
             </strong>{" "}
-            vulnerability with no public exploit and no active scanning poses{" "}
-            <em>less immediate risk</em> than a{" "}
+            with no public exploit poses{" "}
+            <em>less immediate risk to your environment</em> than a{" "}
             <strong className="text-l-text dark:text-gray-200">
               CVSS 7.5
             </strong>{" "}
-            vulnerability with a working PoC, active GreyNoise scanning, and
+            that has a working PoC, active scanning campaigns, and
             CISA KEV confirmation.
           </p>
           <p>
-            KRS weighs{" "}
+            KRS helps your team{" "}
             <strong className="text-acid">
-              real-world exploitation signals
+              focus patching effort where it matters most
             </strong>{" "}
-            more heavily than theoretical severity — because in the real world,{" "}
-            <em>exploitability beats severity</em>.
+            — by weighing real-world exploitation signals more heavily than theoretical severity.
+            When your SLA clock is ticking, KRS tells you which CVEs to patch first.
           </p>
         </div>
       </div>

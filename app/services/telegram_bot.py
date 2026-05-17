@@ -29,6 +29,11 @@ class TelegramAlertBot:
         self.app: Application | None = None
         self._subscribers: dict[int, UserSubscription] = {}
         self._poller = None
+        self._news_intel = None
+        self._threat_actors = None
+        self._ransomware = None
+        self._breach_intel = None
+        self._ioc_pulse = None
 
     @property
     def subscribers_count(self) -> int:
@@ -37,6 +42,22 @@ class TelegramAlertBot:
     def set_poller(self, poller) -> None:
         """Link the poller so /latest and /stats can access data."""
         self._poller = poller
+
+    def set_news_intel(self, news_intel) -> None:
+        """Link the news intel service for /briefing command."""
+        self._news_intel = news_intel
+
+    def set_threat_actors(self, threat_actors) -> None:
+        self._threat_actors = threat_actors
+
+    def set_ransomware(self, ransomware) -> None:
+        self._ransomware = ransomware
+
+    def set_breach_intel(self, breach_intel) -> None:
+        self._breach_intel = breach_intel
+
+    def set_ioc_pulse(self, ioc_pulse) -> None:
+        self._ioc_pulse = ioc_pulse
 
     # ── lifecycle ─────────────────────────────────────────────────────────
 
@@ -59,6 +80,13 @@ class TelegramAlertBot:
         self.app.add_handler(CommandHandler("pause", self._cmd_pause))
         self.app.add_handler(CommandHandler("resume", self._cmd_resume))
         self.app.add_handler(CommandHandler("digest", self._cmd_digest))
+        self.app.add_handler(CommandHandler("briefing", self._cmd_briefing))
+        # Phase 5 intelligence commands
+        self.app.add_handler(CommandHandler("news", self._cmd_news))
+        self.app.add_handler(CommandHandler("actors", self._cmd_actors))
+        self.app.add_handler(CommandHandler("ransomware", self._cmd_ransomware))
+        self.app.add_handler(CommandHandler("breaches", self._cmd_breaches))
+        self.app.add_handler(CommandHandler("ioc", self._cmd_ioc))
         self.app.add_handler(CallbackQueryHandler(self._handle_mode_callback, pattern="^mode_"))
 
         await self.app.initialize()
@@ -134,40 +162,104 @@ class TelegramAlertBot:
 
         return sent
 
+    async def broadcast_text(self, text: str) -> int:
+        """Send a plain text message to all active subscribers."""
+        if not self.app:
+            return 0
+        sent = 0
+        for chat_id, sub in list(self._subscribers.items()):
+            if sub.paused:
+                continue
+            try:
+                await self.app.bot.send_message(
+                    chat_id=chat_id,
+                    text=text,
+                    parse_mode=None,
+                    disable_web_page_preview=True,
+                )
+                sent += 1
+            except Exception as e:
+                logger.error(f"Failed to send text to {chat_id}: {e}")
+        return sent
+
+    async def broadcast_ransomware_alert(self, actor_name: str, cve_id: str, cve: ProcessedCVE) -> int:
+        """Send ransomware CVE adoption alert to ALL active subscribers."""
+        if not self.app:
+            return 0
+        message = (
+            f"\U0001f9a0 RANSOMWARE CVE ALERT\n\n"
+            f"{actor_name} is now exploiting {cve_id}\n\n"
+            f"CVE: {cve_id}\n"
+            f"KRS: {cve.priority_score}/100 · {cve.priority_label}\n"
+            f"CVSS: {cve.cvss_score}\n"
+            f"Group: {actor_name}\n\n"
+            f"View exploit intelligence → /exploit-intel/{cve_id}"
+        )
+        sent = 0
+        for chat_id, sub in list(self._subscribers.items()):
+            if sub.paused:
+                continue
+            try:
+                await self.app.bot.send_message(
+                    chat_id=chat_id, text=message, disable_web_page_preview=True,
+                )
+                sent += 1
+            except Exception as e:
+                logger.error(f"Failed to send ransomware alert to {chat_id}: {e}")
+        return sent
+
     # ── command handlers ──────────────────────────────────────────────────
 
     async def _cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(
-            "🛡 <b>KnowCVE Bot</b>\n\n"
-            "I monitor new CVE vulnerabilities and send you real-time alerts.\n\n"
-            "Commands:\n"
-            "/subscribe — Start receiving alerts\n"
+            "🛡 <b>KnowCVE Intelligence Bot</b>\n\n"
+            "Real-time CVE alerts, threat actor tracking, ransomware campaigns, breach intelligence, and IOC lookups — all in one place.\n\n"
+            "<b>📡 Alerts &amp; Subscriptions</b>\n"
+            "/subscribe — Start receiving CVE alerts\n"
             "/unsubscribe — Stop alerts\n"
-            "/mode — View/change alert mode\n"
-            "/pause — Pause alerts\n"
-            "/resume — Resume alerts\n"
-            "/digest — Last 24h summary\n"
-            "/latest — Show latest CVEs\n"
-            "/stats — Poller statistics\n"
-            "/help — Show this message",
+            "/mode — Set alert threshold (continuous/important/critical)\n"
+            "/pause — Pause alerts temporarily\n"
+            "/resume — Resume alerts\n\n"
+            "<b>🔍 CVE Intelligence</b>\n"
+            "/latest — 5 most recent CVEs\n"
+            "/digest — Last 24h CVE summary\n"
+            "/stats — Poller &amp; pipeline stats\n\n"
+            "<b>📰 News &amp; Briefings</b>\n"
+            "/briefing — Today's executive security briefing\n"
+            "/news — Latest security news headlines\n\n"
+            "<b>🎯 Threat Intelligence</b>\n"
+            "/actors — Active threat actor groups\n"
+            "/ransomware — Active ransomware campaigns\n"
+            "/breaches — Recent major data breaches\n"
+            "/ioc [indicator] — Lookup an IP, domain, hash, or URL\n\n"
+            "/help — Full command reference",
             parse_mode="HTML",
         )
 
     async def _cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(
-            "📖 <b>KnowCVE Commands</b>\n\n"
-            "/subscribe — Subscribe to alerts\n"
-            "/unsubscribe — Unsubscribe from alerts\n"
-            "/mode [continuous|important|critical] — Set alert mode\n"
-            "/pause — Pause all alerts\n"
-            "/resume — Resume alerts\n"
-            "/digest — Last 24h CVE summary\n"
-            "/latest — Show 5 most recent CVEs\n"
-            "/stats — Show polling statistics\n\n"
+            "📖 <b>KnowCVE — Full Command Reference</b>\n\n"
+            "<b>📡 Subscriptions</b>\n"
+            "/subscribe — Subscribe to CVE alerts\n"
+            "/unsubscribe — Unsubscribe\n"
+            "/mode [continuous|important|critical] — Set alert threshold\n"
+            "/pause · /resume — Pause or resume alerts\n\n"
+            "<b>🔍 CVE Intelligence</b>\n"
+            "/latest — 5 most recent CVEs\n"
+            "/digest — Last 24h summary by severity\n"
+            "/stats — Pipeline &amp; poller statistics\n\n"
+            "<b>📰 News</b>\n"
+            "/briefing — Daily executive briefing\n"
+            "/news — Latest security news (top 5 headlines)\n\n"
+            "<b>🎯 Threat Intelligence</b>\n"
+            "/actors — Nation-state &amp; criminal threat groups\n"
+            "/ransomware — Active ransomware campaigns\n"
+            "/breaches — Recent major data breaches\n"
+            "/ioc [indicator] — IOC lookup (IP/domain/hash/URL)\n\n"
             "<b>Alert Modes:</b>\n"
-            "• <b>continuous</b> — All CVEs (score ≥ 25)\n"
+            "• <b>continuous</b> — All triaged CVEs (score ≥ 25)\n"
             "• <b>important</b> — HIGH + CRITICAL only (recommended)\n"
-            "• <b>critical</b> — CRITICAL + actively exploited only",
+            "• <b>critical</b> — CRITICAL + actively exploited (KEV) only",
             parse_mode="HTML",
         )
 
@@ -383,6 +475,204 @@ class TelegramAlertBot:
             f"Poll interval: {settings.POLL_INTERVAL_MINUTES} min",
             parse_mode="HTML",
         )
+
+    async def _cmd_briefing(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Get today's security intelligence briefing on demand."""
+        if not self._news_intel:
+            await update.message.reply_text("📰 News intelligence service not available yet. Check back later!")
+            return
+
+        await update.message.reply_text("📰 Generating briefing...")
+        try:
+            briefing = await self._news_intel.get_daily_briefing()
+            await update.message.reply_text(briefing)
+        except Exception as e:
+            logger.error(f"Briefing generation failed: {e}")
+            await update.message.reply_text("❌ Failed to generate briefing. Try again later.")
+
+    # ── Phase 5 intelligence commands ────────────────────────────────────
+
+    async def _cmd_news(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Show top 5 latest security news headlines."""
+        if not self._news_intel:
+            await update.message.reply_text("📰 News service not available yet.")
+            return
+        try:
+            from app.core.config import settings
+            client = self._news_intel._client
+            if not client:
+                await update.message.reply_text("📰 Database not connected.")
+                return
+            res = (
+                client.table("security_news")
+                .select("title, source, url, summary, published_at")
+                .order("published_at", desc=True)
+                .limit(5)
+                .execute()
+            )
+            articles = res.data or []
+            if not articles:
+                await update.message.reply_text("📰 No news articles yet. Check back soon!")
+                return
+            lines = ["📰 <b>Latest Security News</b>\n"]
+            for a in articles:
+                title = a.get("title", "")[:120]
+                source = a.get("source", "")
+                url = a.get("url", "")
+                summary = a.get("summary", "")[:150]
+                lines.append(f"• <b>{title}</b>")
+                lines.append(f"  📡 {source}")
+                if summary:
+                    lines.append(f"  {summary}")
+                if url:
+                    lines.append(f"  <a href='{url}'>Read more</a>")
+                lines.append("")
+            await update.message.reply_text("\n".join(lines), parse_mode="HTML", disable_web_page_preview=True)
+        except Exception as e:
+            logger.error(f"_cmd_news failed: {e}")
+            await update.message.reply_text("❌ Could not fetch news. Try again later.")
+
+    async def _cmd_actors(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Show active threat actor groups."""
+        if not self._threat_actors:
+            await update.message.reply_text("🎯 Threat actor service not available.")
+            return
+        try:
+            actors = await self._threat_actors.get_all_actors(active_only=True)
+            if not actors:
+                await update.message.reply_text("🎯 No active threat actors found.")
+                return
+            nation_state = [a for a in actors if "Nation-State" in a.get("sophistication", "")]
+            org_crime = [a for a in actors if "Organized Crime" in a.get("sophistication", "")]
+            lines = ["🎯 <b>Active Threat Actor Groups</b>\n"]
+            if nation_state:
+                lines.append("<b>🏴 Nation-State APTs</b>")
+                for a in nation_state[:6]:
+                    flag = {"Russia": "🇷🇺", "China": "🇨🇳", "North Korea": "🇰🇵", "Iran": "🇮🇷"}.get(a.get("origin_country", ""), "🌐")
+                    lines.append(f"  {flag} <b>{a['name']}</b> — {a.get('motivation', '')}")
+                lines.append("")
+            if org_crime:
+                lines.append("<b>💰 Organized Crime / RaaS</b>")
+                for a in org_crime[:6]:
+                    lines.append(f"  🦠 <b>{a['name']}</b> — {', '.join(a.get('targeted_sectors', [])[:2])}")
+            lines.append("\nUse /ransomware for active campaigns.")
+            await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+        except Exception as e:
+            logger.error(f"_cmd_actors failed: {e}")
+            await update.message.reply_text("❌ Could not fetch threat actors.")
+
+    async def _cmd_ransomware(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Show active ransomware campaigns."""
+        if not self._ransomware:
+            await update.message.reply_text("🦠 Ransomware tracker not available.")
+            return
+        try:
+            campaigns = await self._ransomware.get_active_campaigns(status="active")
+            if not campaigns:
+                await update.message.reply_text("🦠 No active campaigns found.")
+                return
+            lines = ["🦠 <b>Active Ransomware Campaigns</b>\n"]
+            for c in campaigns[:6]:
+                name = c.get("actor_name") or c.get("actor_slug", "Unknown")
+                campaign = c.get("campaign_name", "")[:80]
+                cves = c.get("cve_ids", [])
+                sectors = ", ".join(c.get("sectors", [])[:2])
+                lines.append(f"🔴 <b>{name}</b>")
+                lines.append(f"   📋 {campaign}")
+                if cves:
+                    lines.append(f"   🎯 CVEs: {', '.join(cves[:3])}")
+                if sectors:
+                    lines.append(f"   🏢 Targets: {sectors}")
+                lines.append("")
+            await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+        except Exception as e:
+            logger.error(f"_cmd_ransomware failed: {e}")
+            await update.message.reply_text("❌ Could not fetch ransomware data.")
+
+    async def _cmd_breaches(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Show recent major data breaches."""
+        if not self._breach_intel:
+            await update.message.reply_text("💀 Breach intel service not available.")
+            return
+        try:
+            breaches = await self._breach_intel.get_breaches(limit=5)
+            if not breaches:
+                await update.message.reply_text("💀 No breach records found.")
+                return
+            lines = ["💀 <b>Recent Major Data Breaches</b>\n"]
+            for b in breaches:
+                company = b.get("company_name", "Unknown")
+                actor = b.get("actor_name") or "Unknown actor"
+                date = (b.get("breach_date") or "")[:10]
+                records = b.get("records_count")
+                sectors = ", ".join(b.get("sectors", [])[:2])
+                cves = b.get("cve_ids", [])
+                lines.append(f"🔓 <b>{company}</b> ({date})")
+                lines.append(f"   👤 Actor: {actor}")
+                if records:
+                    lines.append(f"   📊 Records: {records:,}")
+                if sectors:
+                    lines.append(f"   🏢 Sector: {sectors}")
+                if cves:
+                    lines.append(f"   🎯 CVEs: {', '.join(cves[:2])}")
+                lines.append("")
+            await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+        except Exception as e:
+            logger.error(f"_cmd_breaches failed: {e}")
+            await update.message.reply_text("❌ Could not fetch breach data.")
+
+    async def _cmd_ioc(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Lookup an IOC (IP, domain, hash, or URL)."""
+        if not context.args:
+            await update.message.reply_text(
+                "🔎 <b>IOC Lookup</b>\n\nUsage: /ioc [indicator]\n\n"
+                "Examples:\n"
+                "  /ioc 185.220.101.5\n"
+                "  /ioc malware.example.com\n"
+                "  /ioc d41d8cd98f00b204e9800998ecf8427e",
+                parse_mode="HTML",
+            )
+            return
+        if not self._ioc_pulse:
+            await update.message.reply_text("🔎 IOC lookup service not available.")
+            return
+        indicator = context.args[0].strip()
+        await update.message.reply_text(f"🔎 Looking up <code>{indicator}</code>...", parse_mode="HTML")
+        try:
+            result = await self._ioc_pulse.lookup(indicator)
+            verdict = result.get("verdict", "unknown").upper()
+            risk = result.get("risk_score", 0)
+            ioc_type = result.get("ioc_type", "unknown")
+            cached = "(cached)" if result.get("cached") else ""
+            verdict_emoji = {"MALICIOUS": "🔴", "SUSPICIOUS": "🟠", "CLEAN": "🟢"}.get(verdict, "⚪")
+            lines = [
+                f"🔎 <b>IOC Report</b> {cached}\n",
+                f"Indicator: <code>{indicator}</code>",
+                f"Type: {ioc_type.upper()}",
+                f"Verdict: {verdict_emoji} <b>{verdict}</b>",
+                f"Risk Score: {risk}/100",
+            ]
+            sources = result.get("sources", {})
+            if sources:
+                lines.append("\n<b>Sources:</b>")
+                for src, data in sources.items():
+                    if isinstance(data, dict):
+                        if data.get("hit"):
+                            family = data.get("malware_family", "")
+                            lines.append(f"  • {src.title()}: ✅ HIT{' — ' + family if family else ''}")
+                        elif data.get("confidence"):
+                            lines.append(f"  • {src.title()}: {data['confidence']}% abuse confidence")
+                        elif data.get("noise"):
+                            lines.append(f"  • GreyNoise: 🔥 Internet scanner")
+                        elif data.get("riot"):
+                            lines.append(f"  • GreyNoise: ✅ Known benign service")
+            related = result.get("related_cves", [])
+            if related:
+                lines.append(f"\n🎯 Related CVEs: {', '.join(related[:3])}")
+            await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+        except Exception as e:
+            logger.error(f"_cmd_ioc failed: {e}")
+            await update.message.reply_text("❌ IOC lookup failed. Try again later.")
 
     # ── alert formatting ──────────────────────────────────────────────────
 

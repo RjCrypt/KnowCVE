@@ -13,6 +13,7 @@ from app.models.cve import ProcessedCVE, EnrichmentData
 from app.services.nvd_client import NVDClient
 from app.services.triage import TriageEngine
 from app.services.exploit_intel import ExploitIntelligenceOrchestrator
+from app.services.advisory_feed import AdvisoryFeedService
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,7 @@ class CVEPoller:
         self.scheduler = AsyncIOScheduler()
         self.nvd_client = NVDClient()
         self.exploit_intel = ExploitIntelligenceOrchestrator()
+        self.advisory_feed = AdvisoryFeedService()
 
         # In-memory state
         self._seen_ids: set[str] = set()
@@ -112,6 +114,16 @@ class CVEPoller:
             max_instances=1,
         )
 
+        # Job 5: Advisory feed — GitHub Advisory DB + OSV.dev (every 2 hours)
+        self.scheduler.add_job(
+            self.advisory_feed_job,
+            "interval",
+            hours=2,
+            id="advisory_feed",
+            replace_existing=True,
+            max_instances=1,
+        )
+
         self.scheduler.start()
 
         # Initialize ExploitDB CSV in background
@@ -120,7 +132,7 @@ class CVEPoller:
         logger.info(
             f"CVE poller started — fresh every {interval}min, "
             f"enrichment sweep every 6h, trending refresh every 1h, "
-            f"ExploitDB refresh every 24h"
+            f"ExploitDB refresh every 24h, advisory feed every 2h"
         )
 
     async def _init_exploit_intel(self) -> None:
@@ -222,6 +234,30 @@ class CVEPoller:
             "alerts_sent": alerts_sent,
             "errors": errors,
         }
+
+    async def fetch_and_process_single(self, cve_id: str) -> Optional[ProcessedCVE]:
+        """Dynamically fetch a specific CVE from NVD, triage, and save it on-demand."""
+        raw = await self.nvd_client.fetch_cve_by_id(cve_id)
+        if not raw:
+            return None
+
+        # Process without batch EPSS (it handles single fallbacks internally)
+        pcve = await self.triage.process_cve_with_epss(raw, {})
+        
+        # Add to memory and database
+        self._seen_ids.add(pcve.cve_id)
+        # Avoid appending entirely to memory history to prevent bloating, 
+        # but we do want it easily cacheable if requested again soon.
+        self._processed_cves.append(pcve)
+        
+        if self._db:
+            asyncio.create_task(self._db.save_cve(pcve))
+            
+        # Also grab exploit intel if it's HIGH+
+        if pcve.priority_score >= 50 or pcve.enrichment.in_kev:
+            asyncio.create_task(self._gather_and_save_exploit_intel(pcve))
+            
+        return pcve
 
     async def _gather_and_save_exploit_intel(self, cve: ProcessedCVE) -> None:
         """Gather exploit intel for a single CVE and save to DB."""
@@ -510,3 +546,252 @@ class CVEPoller:
     async def poll_cycle(self) -> dict:
         """Legacy alias — delegates to fresh_cves_job."""
         return await self.fresh_cves_job()
+
+    # ══════════════════════════════════════════════════════════════════════
+    # Job 5 — ADVISORY FEED (GitHub Advisory DB + OSV.dev)
+    # ══════════════════════════════════════════════════════════════════════
+
+    async def advisory_feed_job(self) -> None:
+        """Poll GitHub Advisory DB + OSV.dev for supply chain threats.
+
+        For each advisory:
+        - If it has a CVE ID already in our DB → update categories to include SUPPLY_CHAIN
+        - If it has a CVE ID NOT in our DB → fetch from NVD, triage, save
+        - If it's a malware advisory WITHOUT a CVE → create synthetic entry
+        All malware advisories trigger breaking threat alerts.
+        """
+        logger.info("📦 Starting advisory feed job…")
+
+        try:
+            # Use wider window on first run (24h), then 6h
+            hours_back = 24 if self._poll_count <= 1 else 6
+            advisories = await self.advisory_feed.poll_advisories(
+                hours_back=hours_back,
+            )
+        except Exception as e:
+            logger.error(f"Advisory feed poll error: {e}")
+            return
+
+        if not advisories:
+            logger.info("Advisory feed: no new advisories")
+            return
+
+        processed = 0
+        alerts_sent = 0
+
+        for adv in advisories:
+            try:
+                # Skip withdrawn advisories
+                if adv.withdrawn:
+                    continue
+
+                # Skip if already processed (by GHSA ID)
+                if adv.ghsa_id and self._db:
+                    prev_cve_id = await self._db.get_advisory_linked_cve(adv.ghsa_id)
+                    if prev_cve_id:
+                        # Migration: GHSA-based synthetic ID -> real CVE ID
+                        if prev_cve_id.startswith("GHSA-") and adv.cve_id and adv.cve_id.startswith("CVE-"):
+                            logger.info(f"🔄 Upgrading advisory {adv.ghsa_id}: {prev_cve_id} -> {adv.cve_id}")
+                            await self._db.migrate_ghsa_to_cve(prev_cve_id, adv.cve_id)
+                            if prev_cve_id in self._seen_ids:
+                                self._seen_ids.remove(prev_cve_id)
+                            self._processed_cves = [c for c in self._processed_cves if c.cve_id != prev_cve_id]
+                        else:
+                            continue
+
+                linked_cve_id = None
+
+                if adv.cve_id:
+                    # ── Advisory has a CVE ID ──────────────────────────
+                    existing = None
+
+                    # Check in-memory first
+                    existing = self.get_cve(adv.cve_id)
+
+                    # Check DB
+                    if not existing and self._db and self._db.is_configured:
+                        existing = await self._db.get_cve(adv.cve_id)
+
+                    if existing:
+                        # CVE already known — enrich with supply chain data
+                        if "SUPPLY_CHAIN" not in existing.categories:
+                            existing.categories.append("SUPPLY_CHAIN")
+                        if adv.is_malware and "ACTIVELY_EXPLOITED" not in existing.categories:
+                            existing.categories.append("ACTIVELY_EXPLOITED")
+
+                        existing.ghsa_id = adv.ghsa_id
+                        existing.ecosystem = adv.ecosystem
+                        existing.is_malware_advisory = adv.is_malware
+                        existing.affected_packages = adv.affected_packages
+
+                        # Re-score with supply chain bonus
+                        from app.models.cve import RawCVE
+                        raw_proxy = RawCVE(
+                            cve_id=existing.cve_id,
+                            description=existing.description,
+                            cvss_score=existing.cvss_score,
+                            cvss_vector=existing.cvss_vector,
+                            cvss_version=existing.cvss_version,
+                            published_date=existing.published_date,
+                            last_modified=existing.last_modified,
+                            weaknesses=existing.weaknesses,
+                        )
+                        new_score, new_label, categories = self.triage.calculate_priority(
+                            raw_proxy, existing.enrichment,
+                        )
+                        # Merge categories
+                        for cat in existing.categories:
+                            if cat not in categories:
+                                categories.append(cat)
+                        existing.priority_score = new_score
+                        existing.priority_label = new_label
+                        existing.categories = categories
+
+                        # Save updates
+                        if self._db:
+                            now = datetime.now(timezone.utc)
+                            await self._db.update_cve_score(
+                                cve_id=existing.cve_id,
+                                priority_score=new_score,
+                                priority_label=new_label,
+                                categories=categories,
+                                dynamic_score=existing.dynamic_score,
+                                enrichment=existing.enrichment,
+                                last_rescored_at=now,
+                            )
+
+                        # Update in-memory
+                        for i, cached in enumerate(self._processed_cves):
+                            if cached.cve_id == existing.cve_id:
+                                self._processed_cves[i] = existing
+                                break
+
+                        linked_cve_id = existing.cve_id
+                        processed += 1
+
+                    else:
+                        # CVE not yet known — fetch from NVD and process
+                        raw = await self.nvd_client.fetch_cve_by_id(adv.cve_id)
+                        if raw:
+                            # Inject supply chain keywords into description if malware
+                            if adv.is_malware and "supply chain" not in raw.description.lower():
+                                raw.description = (
+                                    f"[Supply Chain / Malware] {adv.summary}\n\n"
+                                    f"{raw.description}"
+                                )
+
+                            pcve = await self.triage.process_cve(raw)
+
+                            # Ensure supply chain category
+                            if "SUPPLY_CHAIN" not in pcve.categories:
+                                pcve.categories.append("SUPPLY_CHAIN")
+                            if adv.is_malware and "ACTIVELY_EXPLOITED" not in pcve.categories:
+                                pcve.categories.append("ACTIVELY_EXPLOITED")
+
+                            pcve.ghsa_id = adv.ghsa_id
+                            pcve.ecosystem = adv.ecosystem
+                            pcve.is_malware_advisory = adv.is_malware
+                            pcve.affected_packages = adv.affected_packages
+
+                            self._seen_ids.add(pcve.cve_id)
+                            self._processed_cves.append(pcve)
+
+                            if self._db:
+                                asyncio.create_task(self._db.save_cve(pcve))
+
+                            linked_cve_id = pcve.cve_id
+                            processed += 1
+
+                            # Breaking threat for malware advisories
+                            if adv.is_malware and self._breaking_threat_callback:
+                                try:
+                                    await self._breaking_threat_callback(pcve)
+                                    alerts_sent += 1
+                                except Exception as e:
+                                    logger.error(f"Advisory breaking alert error: {e}")
+                            elif self._alert_callback and pcve.priority_score >= 25:
+                                try:
+                                    await self._alert_callback(pcve)
+                                    alerts_sent += 1
+                                except Exception as e:
+                                    logger.error(f"Advisory alert error: {e}")
+                        else:
+                            logger.debug(
+                                f"Advisory {adv.ghsa_id}: CVE {adv.cve_id} "
+                                f"not yet in NVD — will retry next cycle"
+                            )
+
+                else:
+                    # ── Malware advisory WITHOUT CVE ID ───────────────
+                    # Create a synthetic ProcessedCVE using GHSA data
+                    if adv.is_malware and adv.ghsa_id:
+                        identifier = adv.ghsa_id.upper()  # Use GHSA ID as temp identifier (force upper)
+
+                        if identifier in self._seen_ids:
+                            continue
+
+                        # Map severity to synthetic CVSS
+                        severity_cvss = {
+                            "critical": 9.8, "high": 8.5,
+                            "medium": 6.0, "low": 3.5,
+                        }
+                        synthetic_cvss = severity_cvss.get(adv.severity, 7.0)
+
+                        # Build package list for description
+                        pkg_names = [p.get("name", "?") for p in adv.affected_packages[:5]]
+                        pkg_str = ", ".join(pkg_names) if pkg_names else "unknown package"
+
+                        pcve = ProcessedCVE(
+                            cve_id=identifier,
+                            description=(
+                                f"[MALWARE — {adv.ecosystem}] {adv.summary}\n\n"
+                                f"Affected: {pkg_str}\n\n"
+                                f"{adv.description[:500]}"
+                            ),
+                            cvss_score=synthetic_cvss,
+                            published_date=adv.published_at,
+                            last_modified=adv.updated_at,
+                            references=adv.references,
+                            enrichment=EnrichmentData(),
+                            priority_score=max(75, int(synthetic_cvss * 10)),
+                            priority_label="CRITICAL" if synthetic_cvss >= 9.0 else "HIGH",
+                            categories=["SUPPLY_CHAIN", "ACTIVELY_EXPLOITED"],
+                            ghsa_id=adv.ghsa_id,
+                            ecosystem=adv.ecosystem,
+                            is_malware_advisory=True,
+                            affected_packages=adv.affected_packages,
+                        )
+
+                        self._seen_ids.add(identifier)
+                        self._processed_cves.append(pcve)
+
+                        if self._db:
+                            asyncio.create_task(self._db.save_cve(pcve))
+
+                        linked_cve_id = identifier
+                        processed += 1
+
+                        # Always alert on malware
+                        if self._breaking_threat_callback:
+                            try:
+                                await self._breaking_threat_callback(pcve)
+                                alerts_sent += 1
+                            except Exception as e:
+                                logger.error(f"Malware advisory alert error: {e}")
+
+                # Save advisory to tracking table
+                if self._db and adv.ghsa_id:
+                    asyncio.create_task(
+                        self._db.save_advisory_alert(adv, linked_cve_id)
+                    )
+
+            except Exception as e:
+                logger.error(
+                    f"Advisory processing error for {adv.ghsa_id or adv.cve_id}: {e}"
+                )
+                continue
+
+        logger.info(
+            f"📦 Advisory feed done: {processed} processed, "
+            f"{alerts_sent} alerts sent"
+        )
