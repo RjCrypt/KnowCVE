@@ -6,7 +6,11 @@ export async function middleware(request: NextRequest) {
     request: { headers: request.headers },
   });
 
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  let supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
+  supabaseUrl = supabaseUrl.trim();
+  if (supabaseUrl && !supabaseUrl.startsWith("http")) {
+    supabaseUrl = `https://${supabaseUrl}`;
+  }
   const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
   if (!supabaseUrl || !supabaseAnonKey) {
