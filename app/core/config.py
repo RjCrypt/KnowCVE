@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     SUPABASE_URL: str = Field(default="", description="Supabase project URL")
     SUPABASE_KEY: str = Field(default="", description="Supabase anon key")
     APP_SECRET_KEY: str = Field(default="", description="Secret key for admin endpoints (poll trigger)")
+    ABUSEIPDB_API_KEY: str = Field(default="", description="AbuseIPDB API key for IOC lookups")
 
     # ── Service URLs ──────────────────────────────────────────────────────
     NVD_BASE_URL: str = "https://services.nvd.nist.gov/rest/json/cves/2.0"

@@ -102,4 +102,30 @@
     @apply animate-pulse rounded-md;
     @apply bg-l-muted/50 dark:bg-muted/50;
   }
+
+  /* Category tab */
+  .category-tab {
+    @apply relative overflow-hidden;
+  }
+  .category-tab::after {
+    content: "";
+    @apply absolute inset-0 rounded-lg opacity-0 transition-opacity duration-300;
+    background: linear-gradient(135deg, transparent 60%, currentColor 200%);
+  }
+  .category-tab:hover::after {
+    @apply opacity-[0.04];
+  }
+}
+
+/* ── Utility overrides ──────────────────────────────── */
+
+@layer utilities {
+  /* Hide scrollbar but keep scrolling */
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
 }

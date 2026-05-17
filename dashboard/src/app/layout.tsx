@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Syne, DM_Sans, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import { ThemeProvider } from "@/components/ThemeProvider";
+import { AuthProvider } from "@/lib/auth-context";
 import Navbar from "@/components/Navbar";
 
 const syne = Syne({
@@ -23,9 +24,9 @@ const jetBrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "KnowCVE — Vulnerability Intelligence Dashboard",
+  title: "KnowCVE — Real-time Vulnerability Intelligence",
   description:
-    "Real-time CVE monitoring, enrichment, AI-powered explanations, and priority scoring for security researchers.",
+    "Monitor CVEs that matter to your stack. AI-enriched analysis, exploit intelligence, and priority scoring for security teams.",
 };
 
 export default function RootLayout({
@@ -41,8 +42,10 @@ export default function RootLayout({
     >
       <body className="flex min-h-screen flex-col">
         <ThemeProvider>
-          <Navbar />
-          <main className="flex-1">{children}</main>
+          <AuthProvider>
+            <Navbar />
+            <main className="flex-1">{children}</main>
+          </AuthProvider>
         </ThemeProvider>
       </body>
     </html>
