@@ -25,6 +25,9 @@ from app.services.ioc_pulse import IOCPulseService
 from app.services.news_intel import NewsIntelService
 from app.services.breach_intel import BreachIntelService
 
+# Phase 7
+from app.services.watchlist_service import WatchlistService
+
 from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.triggers.cron import CronTrigger
 
@@ -61,6 +64,9 @@ ransomware_tracker = RansomwareTrackerService()
 ioc_pulse = IOCPulseService()
 news_intel = NewsIntelService()
 breach_intel = BreachIntelService()
+
+# Phase 7
+watchlist_service = WatchlistService(db=db_service)
 
 
 # ── Lifespan ──────────────────────────────────────────────────────────────────
@@ -148,7 +154,15 @@ async def lifespan(app: FastAPI):
         replace_existing=True,
     )
 
-    logger.info("✅ KnowCVE ready — Phase 5 threat intelligence + supply chain detection active")
+    # Phase 7 — Daily digest email at 08:00 UTC
+    poller.scheduler.add_job(
+        watchlist_service.run_daily_digest_job,
+        trigger=CronTrigger(hour=8, minute=0),
+        id="daily_digest",
+        max_instances=1,
+    )
+
+    logger.info("✅ KnowCVE ready — Phase 5 threat intelligence + supply chain detection + Phase 7 watchlist active")
     yield
 
     # Shutdown
@@ -189,8 +203,8 @@ init_routes(
 )
 app.include_router(router)
 
-# Phase 6 — Auth, Bookmarks, Waitlist
-init_auth_routes(db=db_service)
+# Phase 6 — Auth, Bookmarks, Waitlist + Phase 7 — Watchlist
+init_auth_routes(db=db_service, watchlist=watchlist_service)
 app.include_router(auth_router)
 
 

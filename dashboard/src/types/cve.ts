@@ -311,3 +311,30 @@ export interface FullCVEContext {
   context: CVEContext;
 }
 
+// ── Phase 7: Watchlist & Exposure Types ─────────────────────────────────────
+
+export interface WatchlistItem {
+  id: string;
+  user_id: string;
+  cpe_string: string;
+  display_name: string;
+  criticality: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW';
+  created_at: string;
+}
+
+export interface ExposureScore {
+  score: number;
+  critical_count: number;
+  high_count: number;
+  actively_exploited_count: number;
+  top_cves: Array<{
+    cve_id: string;
+    priority_score: number;
+    priority_label: string;
+    description: string;
+    in_kev: boolean;
+    ai_summary: string;
+  }>;
+  calculated_at: string;
+}
+

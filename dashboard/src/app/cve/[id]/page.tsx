@@ -20,7 +20,7 @@ import {
   Swords,
 } from "lucide-react";
 import Link from "next/link";
-import { getCVE } from "@/lib/api";
+import { getCVE, getWatchlist } from "@/lib/api";
 import type { ProcessedCVE } from "@/types/cve";
 import {
   cn,
@@ -118,6 +118,7 @@ export default function CVEDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [mode, setMode] = useState<"beginner" | "advanced">("beginner");
   const [offensiveMode, setOffensiveMode] = useState(false);
+  const [watchlistMatch, setWatchlistMatch] = useState<string | null>(null);
 
   useEffect(() => {
     if (!cveId) return;
@@ -130,6 +131,27 @@ export default function CVEDetailPage() {
       .catch((e) => setError(e.message || "CVE not found"))
       .finally(() => setLoading(false));
   }, [cveId]);
+
+  // Watchlist context check
+  useEffect(() => {
+    if (!user || !cve) return;
+    const affectedTech = cve.ai_explanation?.affected_tech || [];
+    if (affectedTech.length === 0) return;
+    getWatchlist(user.id)
+      .then((wl) => {
+        const affectedLower = affectedTech.map((t) => t.toLowerCase()).join(" ");
+        for (const item of wl) {
+          const name = item.display_name.toLowerCase();
+          const cpe = item.cpe_string.toLowerCase();
+          if (affectedLower.includes(name) || affectedLower.includes(cpe)) {
+            setWatchlistMatch(item.display_name);
+            return;
+          }
+        }
+        setWatchlistMatch(null);
+      })
+      .catch(() => {});
+  }, [user, cve]);
 
   if (loading) return <DetailSkeleton />;
 
@@ -252,6 +274,16 @@ export default function CVEDetailPage() {
           {cve.description}
         </p>
       </div>
+
+      {/* Watchlist context banner */}
+      {watchlistMatch && (
+        <div className="p-3 mb-4 rounded-lg border border-amber-500/20 bg-amber-500/5 flex items-center gap-2 animate-fade-in">
+          <AlertTriangle className="h-4 w-4 text-amber-400 shrink-0" />
+          <p className="text-sm text-amber-400">
+            This CVE affects <span className="font-medium">{watchlistMatch}</span> in your watchlist
+          </p>
+        </div>
+      )}
 
       {/* Offensive Research Mode toggle */}
       <div className="flex items-center justify-between gap-4 mb-4">
