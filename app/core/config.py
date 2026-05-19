@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     SUPABASE_KEY: str = Field(default="", description="Supabase anon key")
     APP_SECRET_KEY: str = Field(default="", description="Secret key for admin endpoints (poll trigger)")
     ABUSEIPDB_API_KEY: str = Field(default="", description="AbuseIPDB API key for IOC lookups")
+    SENDGRID_API_KEY: str = Field(default="", description="SendGrid API key for email delivery")
+    SENDGRID_FROM_EMAIL: str = Field(default="", description="SendGrid sender email address")
+    FRONTEND_URL: str = Field(default="https://know-cve.vercel.app", description="Frontend URL for email links")
 
     # ── Service URLs ──────────────────────────────────────────────────────
     NVD_BASE_URL: str = "https://services.nvd.nist.gov/rest/json/cves/2.0"

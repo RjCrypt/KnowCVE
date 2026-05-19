@@ -1,13 +1,40 @@
 "use client";
 
-import { Suspense } from "react";
+import { Suspense, useEffect, useState } from "react";
+import Link from "next/link";
+import { ArrowRight, X } from "lucide-react";
 import StatsBar from "@/components/StatsBar";
 import CVEFeed from "@/components/CVEFeed";
 import CategorySection from "@/components/CategorySection";
 import Footer from "@/components/layout/Footer";
-import { getCVEsByCategory, getTrendingCVEs, getFreshCVEs } from "@/lib/api";
+import { getCVEsByCategory, getTrendingCVEs, getFreshCVEs, getWatchlistCVEs } from "@/lib/api";
+import { useAuth } from "@/lib/auth-context";
 
 export default function DashboardPage() {
+  const { user } = useAuth();
+  const [matchCount, setMatchCount] = useState(0);
+  const [bannerDismissed, setBannerDismissed] = useState(true);
+
+  useEffect(() => {
+    // Check localStorage for dismissal
+    const dismissed = localStorage.getItem("knowcve_feed_banner_dismissed");
+    if (!dismissed) setBannerDismissed(false);
+  }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    getWatchlistCVEs(user.id, 1, 1)
+      .then((res) => setMatchCount(res.total || 0))
+      .catch(() => {});
+  }, [user]);
+
+  const dismissBanner = () => {
+    setBannerDismissed(true);
+    localStorage.setItem("knowcve_feed_banner_dismissed", "1");
+  };
+
+  const showBanner = user && matchCount > 0 && !bannerDismissed;
+
   return (
     <div className="mx-auto max-w-7xl px-4 sm:px-6 py-8 animate-fade-in">
       {/* Heading */}
@@ -21,6 +48,22 @@ export default function DashboardPage() {
           Monitor CVEs that matter to your stack · Triage faster · Stay ahead of active exploits
         </p>
       </div>
+
+      {/* Personalization banner */}
+      {showBanner && (
+        <div className="mb-4 p-3 rounded-xl border border-acid/20 bg-acid/5 flex items-center justify-between gap-3 animate-fade-in">
+          <p className="text-sm text-l-text dark:text-gray-200">
+            Showing all CVEs.{" "}
+            <span className="text-acid font-medium">{matchCount} CVEs match your stack today.</span>{" "}
+            <Link href="/workspace" className="text-acid hover:underline inline-flex items-center gap-1">
+              View your personalized feed <ArrowRight className="h-3.5 w-3.5" />
+            </Link>
+          </p>
+          <button onClick={dismissBanner} className="text-l-sub dark:text-gray-500 hover:text-l-text dark:hover:text-gray-300 shrink-0">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
 
       {/* Stats row */}
       <StatsBar />
@@ -78,3 +121,4 @@ export default function DashboardPage() {
     </div>
   );
 }
+

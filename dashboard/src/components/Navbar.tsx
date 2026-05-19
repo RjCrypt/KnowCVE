@@ -22,7 +22,7 @@ import {
 import { useEffect, useState, useRef } from "react";
 import { useTheme } from "./ThemeProvider";
 import { useAuth } from "@/lib/auth-context";
-import { getHealth } from "@/lib/api";
+import { getHealth, getExposureScore } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 export default function Navbar() {
@@ -33,6 +33,7 @@ export default function Navbar() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [intelOpen, setIntelOpen] = useState(false);
   const [avatarOpen, setAvatarOpen] = useState(false);
+  const [exposureScore, setExposureScore] = useState<number | null>(null);
 
   const intelRef = useRef<HTMLDivElement>(null);
   const avatarRef = useRef<HTMLDivElement>(null);
@@ -54,6 +55,14 @@ export default function Navbar() {
       clearInterval(id);
     };
   }, []);
+
+  // Fetch exposure score when user is logged in
+  useEffect(() => {
+    if (!user) { setExposureScore(null); return; }
+    getExposureScore(user.id)
+      .then((data) => setExposureScore(data?.score ?? null))
+      .catch(() => setExposureScore(null));
+  }, [user]);
 
   // Close menus on route change
   useEffect(() => {
@@ -280,7 +289,23 @@ export default function Navbar() {
 
           {/* Auth section */}
           {user ? (
-            /* Avatar dropdown */
+            <div className="flex items-center gap-1.5">
+              {/* Exposure score pill */}
+              <Link
+                href="/workspace"
+                title="Your exposure score — based on your watchlist"
+                className={cn(
+                  "flex items-center justify-center h-7 min-w-[28px] px-1.5 rounded-full text-xs font-mono font-bold transition-colors",
+                  exposureScore !== null && exposureScore < 30 && "bg-emerald-500/15 text-emerald-400 border border-emerald-500/30",
+                  exposureScore !== null && exposureScore >= 30 && exposureScore <= 70 && "bg-amber-500/15 text-amber-400 border border-amber-500/30",
+                  exposureScore !== null && exposureScore > 70 && "bg-red-500/15 text-red-400 border border-red-500/30",
+                  exposureScore === null && "bg-l-panel dark:bg-panel text-l-sub dark:text-gray-600 border border-l-border dark:border-border",
+                )}
+              >
+                {exposureScore !== null ? exposureScore : "—"}
+              </Link>
+
+            {/* Avatar dropdown */}
             <div className="relative" ref={avatarRef}>
               <button
                 onClick={() => setAvatarOpen(!avatarOpen)}
@@ -343,6 +368,7 @@ export default function Navbar() {
                   </button>
                 </div>
               )}
+            </div>
             </div>
           ) : (
             /* Sign In button */
