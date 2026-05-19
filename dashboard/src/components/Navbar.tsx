@@ -295,7 +295,7 @@ export default function Navbar() {
                 href="/workspace"
                 title="Your exposure score — based on your watchlist"
                 className={cn(
-                  "hidden sm:flex items-center justify-center h-7 min-w-[28px] px-1.5 rounded-full text-xs font-mono font-bold transition-colors",
+                  "flex items-center justify-center h-7 min-w-[28px] px-1.5 rounded-full text-xs font-mono font-bold transition-colors",
                   exposureScore !== null && exposureScore < 30 && "bg-emerald-500/15 text-emerald-400 border border-emerald-500/30",
                   exposureScore !== null && exposureScore >= 30 && exposureScore <= 70 && "bg-amber-500/15 text-amber-400 border border-amber-500/30",
                   exposureScore !== null && exposureScore > 70 && "bg-red-500/15 text-red-400 border border-red-500/30",
