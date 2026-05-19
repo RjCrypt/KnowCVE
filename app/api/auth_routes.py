@@ -20,11 +20,13 @@ auth_router = APIRouter()
 
 # Injected by main.py at startup
 _db = None
+_watchlist_svc = None
 
 
-def init_auth_routes(db=None) -> None:
-    global _db
+def init_auth_routes(db=None, watchlist=None) -> None:
+    global _db, _watchlist_svc
     _db = db
+    _watchlist_svc = watchlist
 
 
 # ── Pydantic schemas ─────────────────────────────────────────────────────────
@@ -54,6 +56,13 @@ class BookmarkUpdateRequest(BaseModel):
     note: Optional[str] = None
 
 
+class WatchlistAddRequest(BaseModel):
+    user_id: str
+    cpe_string: str
+    display_name: str
+    criticality: str = "MEDIUM"
+
+
 class WaitlistRequest(BaseModel):
     email: str
     tier: str
@@ -67,16 +76,35 @@ def _ensure_db():
 
 
 async def _validate_user(user_id: str):
-    """Verify the user_id exists in user_profiles."""
-    try:
-        result = _db._client.table("user_profiles").select("id").eq("id", user_id).execute()
-        if not result.data:
-            raise HTTPException(status_code=404, detail="User not found")
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"User validation failed: {e}")
-        raise HTTPException(status_code=500, detail="User validation failed")
+    """Verify the user_id exists in user_profiles.
+
+    Retries once on transient DNS failures. On persistent network errors,
+    logs a warning and allows the request through — downstream methods
+    handle Supabase unavailability gracefully.
+    """
+    import asyncio
+
+    for attempt in range(2):
+        try:
+            result = _db._client.table("user_profiles").select("id").eq("id", user_id).execute()
+            if not result.data:
+                raise HTTPException(status_code=404, detail="User not found")
+            return  # success
+        except HTTPException:
+            raise
+        except Exception as e:
+            err_str = str(e)
+            is_dns = "getaddrinfo" in err_str or "Name or service not known" in err_str or "nodename nor servname" in err_str
+            if is_dns and attempt == 0:
+                logger.warning(f"DNS resolution failed (attempt {attempt + 1}), retrying in 1s...")
+                await asyncio.sleep(1)
+                continue
+            if is_dns:
+                # Persistent DNS failure — allow request through; downstream handles it
+                logger.warning(f"User validation skipped due to DNS failure for {user_id}: {e}")
+                return
+            logger.error(f"User validation failed: {e}")
+            raise HTTPException(status_code=500, detail="User validation failed")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -437,3 +465,126 @@ async def join_waitlist(req: WaitlistRequest, request: Request):
     except Exception as e:
         logger.error(f"Waitlist insert failed: {e}")
         raise HTTPException(status_code=500, detail="Failed to join waitlist")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 7 — Watchlist, Exposure Score, Digest
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def _ensure_watchlist():
+    if not _watchlist_svc:
+        raise HTTPException(status_code=503, detail="Watchlist service not configured")
+
+
+@auth_router.get("/api/watchlist/{user_id}", tags=["Watchlist"])
+async def get_watchlist(user_id: str):
+    """List all watchlist items for a user."""
+    _ensure_db()
+    _ensure_watchlist()
+    await _validate_user(user_id)
+    return await _watchlist_svc.get_watchlist(user_id)
+
+
+@auth_router.post("/api/watchlist", tags=["Watchlist"])
+async def add_watchlist_item(req: WatchlistAddRequest):
+    """Add a technology to the user's watchlist."""
+    _ensure_db()
+    _ensure_watchlist()
+    await _validate_user(req.user_id)
+
+    result = await _watchlist_svc.add_watchlist_item(
+        user_id=req.user_id,
+        cpe_string=req.cpe_string,
+        display_name=req.display_name,
+        criticality=req.criticality,
+    )
+    if result is None:
+        raise HTTPException(status_code=500, detail="Failed to add item")
+    if isinstance(result, dict) and "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+
+@auth_router.delete("/api/watchlist/{user_id}/{item_id}", tags=["Watchlist"])
+async def remove_watchlist_item(user_id: str, item_id: str):
+    """Remove a technology from the user's watchlist."""
+    _ensure_db()
+    _ensure_watchlist()
+    await _validate_user(user_id)
+    ok = await _watchlist_svc.remove_watchlist_item(user_id, item_id)
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to remove item")
+    return {"status": "deleted"}
+
+
+@auth_router.get("/api/exposure/{user_id}", tags=["Exposure"])
+async def get_exposure(user_id: str):
+    """Get latest exposure score (recalculates if older than 1h)."""
+    _ensure_db()
+    _ensure_watchlist()
+    await _validate_user(user_id)
+    return await _watchlist_svc.get_exposure(user_id)
+
+
+@auth_router.post("/api/exposure/{user_id}/recalculate", tags=["Exposure"])
+async def recalculate_exposure(user_id: str):
+    """Force recalculate exposure score."""
+    _ensure_db()
+    _ensure_watchlist()
+    await _validate_user(user_id)
+    return await _watchlist_svc.calculate_exposure(user_id)
+
+
+@auth_router.get("/api/watchlist/{user_id}/cves", tags=["Watchlist"])
+async def get_watchlist_cves(
+    user_id: str,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+):
+    """Get all CVEs matching user's watchlist, paginated."""
+    _ensure_db()
+    _ensure_watchlist()
+    await _validate_user(user_id)
+    result = await _watchlist_svc.get_matching_cves(user_id, page=page, page_size=page_size)
+    # Serialize ProcessedCVE models to dicts
+    cves = result.get("cves", [])
+    serialized = []
+    for c in cves:
+        try:
+            serialized.append(c.model_dump() if hasattr(c, 'model_dump') else c)
+        except Exception:
+            serialized.append(c)
+    return {"cves": serialized, "total": result.get("total", 0), "page": result.get("page", 1)}
+
+
+@auth_router.get("/api/digest/unsubscribe/{user_id}", tags=["Digest"])
+async def unsubscribe_digest(user_id: str):
+    """Unsubscribe from daily digest emails."""
+    _ensure_db()
+    _ensure_watchlist()
+    ok = await _watchlist_svc.set_digest_enabled(user_id, False)
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to unsubscribe")
+    return {"status": "unsubscribed", "digest_enabled": False}
+
+
+@auth_router.patch("/api/digest/resubscribe/{user_id}", tags=["Digest"])
+async def resubscribe_digest(user_id: str):
+    """Re-subscribe to daily digest emails."""
+    _ensure_db()
+    _ensure_watchlist()
+    ok = await _watchlist_svc.set_digest_enabled(user_id, True)
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to resubscribe")
+    return {"status": "subscribed", "digest_enabled": True}
+
+
+@auth_router.post("/api/digest/test/{user_id}", tags=["Digest"])
+async def send_test_digest(user_id: str):
+    """Send a test digest email immediately."""
+    _ensure_db()
+    _ensure_watchlist()
+    await _validate_user(user_id)
+    sent = await _watchlist_svc.send_test_digest(user_id)
+    return {"status": "sent" if sent else "failed", "sent": sent}

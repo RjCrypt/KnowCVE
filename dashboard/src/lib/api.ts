@@ -17,6 +17,8 @@ import type {
   SecurityNewsItem,
   BreachRecord,
   FullCVEContext,
+  WatchlistItem,
+  ExposureScore,
 } from "@/types/cve";
 
 const API_BASE =
@@ -321,5 +323,61 @@ export async function askCVEAssistant(
   return apiFetch<{ reply: string }>('/api/cve-assistant', {
     method: 'POST',
     body: JSON.stringify({ cve_id: cveId, message, history }),
+  });
+}
+
+/* ── Phase 7 — Watchlist, Exposure, Digest ────────── */
+
+export async function getWatchlist(userId: string): Promise<WatchlistItem[]> {
+  return apiFetch<WatchlistItem[]>(`/api/watchlist/${userId}`);
+}
+
+export async function addWatchlistItem(params: {
+  user_id: string;
+  cpe_string: string;
+  display_name: string;
+  criticality: string;
+}): Promise<WatchlistItem> {
+  return apiFetch<WatchlistItem>('/api/watchlist', {
+    method: 'POST',
+    body: JSON.stringify(params),
+  });
+}
+
+export async function removeWatchlistItem(userId: string, itemId: string): Promise<void> {
+  await apiFetch<{ status: string }>(`/api/watchlist/${userId}/${itemId}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function getExposureScore(userId: string): Promise<ExposureScore> {
+  return apiFetch<ExposureScore>(`/api/exposure/${userId}`);
+}
+
+export async function recalculateExposure(userId: string): Promise<ExposureScore> {
+  return apiFetch<ExposureScore>(`/api/exposure/${userId}/recalculate`, {
+    method: 'POST',
+  });
+}
+
+export async function getWatchlistCVEs(
+  userId: string,
+  page = 1,
+  pageSize = 20
+): Promise<{ cves: ProcessedCVE[]; total: number; page: number }> {
+  return apiFetch(`/api/watchlist/${userId}/cves?page=${page}&page_size=${pageSize}`);
+}
+
+export async function setDigestEnabled(userId: string, enabled: boolean): Promise<void> {
+  if (enabled) {
+    await apiFetch(`/api/digest/resubscribe/${userId}`, { method: 'PATCH' });
+  } else {
+    await apiFetch(`/api/digest/unsubscribe/${userId}`);
+  }
+}
+
+export async function sendTestDigest(userId: string): Promise<{ sent: boolean }> {
+  return apiFetch<{ sent: boolean }>(`/api/digest/test/${userId}`, {
+    method: 'POST',
   });
 }
