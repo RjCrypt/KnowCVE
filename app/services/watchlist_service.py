@@ -313,9 +313,17 @@ class WatchlistService:
             # Get CVEs from last 24h
             match_result = await self.get_matching_cves(user_id, page=1, page_size=10, since_hours=24)
             new_cves = match_result.get("cves", [])
+            logger.info(f"Digest for {user_id}: {len(new_cves)} new CVEs in last 24h")
 
+            # If no 24h CVEs, fall back to top matching CVEs (all time)
             if not new_cves:
-                logger.info(f"No new matching CVEs for {user_id}, skipping digest")
+                match_result = await self.get_matching_cves(user_id, page=1, page_size=10)
+                new_cves = match_result.get("cves", [])
+                logger.info(f"Digest for {user_id}: falling back to {len(new_cves)} all-time CVEs")
+
+            # Still nothing — user's watchlist doesn't match any CVEs
+            if not new_cves:
+                logger.info(f"No matching CVEs at all for {user_id}, skipping digest")
                 return False
 
             # Get exposure score
@@ -326,7 +334,9 @@ class WatchlistService:
 
             # Build and send email
             html = self._build_digest_html(profile, score_data, new_cves[:5], kev_cves)
-            return await self._send_email(email, f"KnowCVE Daily Digest — {datetime.now(timezone.utc).strftime('%b %d, %Y')}", html)
+            sent = await self._send_email(email, f"KnowCVE Daily Digest — {datetime.now(timezone.utc).strftime('%b %d, %Y')}", html)
+            logger.info(f"Digest for {user_id}: sent={sent}")
+            return sent
 
         except Exception as e:
             logger.error(f"send_daily_digest failed for {user_id}: {e}")
@@ -371,27 +381,39 @@ class WatchlistService:
 
     async def run_daily_digest_job(self) -> None:
         """Scheduled job: send digest to all eligible users."""
+        logger.info("🕗 Daily digest job triggered")
+
         if not self._db or not self._db.is_configured:
+            logger.warning("Daily digest skipped: database not configured")
             return
 
         try:
-            result = (
-                self._db._client.table("user_profiles")
-                .select("id")
-                .eq("onboarding_complete", True)
+            # Find users who have watchlist items (they're the ones who need digests)
+            watchlist_result = (
+                self._db._client.table("user_watchlist")
+                .select("user_id")
                 .execute()
             )
-            users = result.data or []
-            logger.info(f"Daily digest: processing {len(users)} users")
+            # Deduplicate user IDs
+            user_ids = list(set(row["user_id"] for row in (watchlist_result.data or [])))
 
-            for user_row in users:
+            if not user_ids:
+                logger.info("Daily digest: no users with watchlists found")
+                return
+
+            logger.info(f"Daily digest: processing {len(user_ids)} users with watchlists")
+
+            sent_count = 0
+            for uid in user_ids:
                 try:
-                    await self.send_daily_digest(user_row["id"])
+                    result = await self.send_daily_digest(uid)
+                    if result:
+                        sent_count += 1
                 except Exception as e:
-                    logger.error(f"Digest failed for {user_row['id']}: {e}")
+                    logger.error(f"Digest failed for {uid}: {e}")
                 await asyncio.sleep(2)  # Rate limiting
 
-            logger.info("Daily digest job complete")
+            logger.info(f"Daily digest job complete: {sent_count}/{len(user_ids)} sent")
         except Exception as e:
             logger.error(f"run_daily_digest_job failed: {e}")
 
