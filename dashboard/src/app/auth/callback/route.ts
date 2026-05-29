@@ -5,6 +5,7 @@ import { NextResponse } from "next/server";
 export async function GET(request: Request) {
   const { searchParams, origin } = new URL(request.url);
   const code = searchParams.get("code");
+  const invite = searchParams.get("invite");
   const appUrl = process.env.NEXT_PUBLIC_APP_URL || origin;
   const apiBase = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -44,6 +45,7 @@ export async function GET(request: Request) {
     const user = data.user;
 
     // POST to backend to upsert profile
+    let isNewUser = false;
     try {
       const profileRes = await fetch(`${apiBase}/api/auth/profile`, {
         method: "POST",
@@ -65,15 +67,37 @@ export async function GET(request: Request) {
 
       if (profileRes.ok) {
         const profileData = await profileRes.json();
-
-        // If new user, redirect to onboarding
-        if (profileData.is_new_user) {
-          return NextResponse.redirect(`${appUrl}/onboarding`);
-        }
+        isNewUser = !!profileData.is_new_user;
       }
     } catch (err) {
       // Non-fatal — user is authenticated even if profile sync fails
       console.error("Profile sync failed:", err);
+    }
+
+    // If invite token is present, try to auto-accept
+    if (invite) {
+      try {
+        const acceptRes = await fetch(
+          `${apiBase}/api/invites/accept/${invite}?user_id=${user.id}`
+        );
+        if (acceptRes.ok) {
+          const acceptData = await acceptRes.json();
+          if (acceptData.org_id && !acceptData.requires_signup) {
+            return NextResponse.redirect(
+              `${appUrl}/org/${acceptData.org_id}/dashboard`
+            );
+          }
+        }
+      } catch (err) {
+        console.error("Invite auto-accept failed:", err);
+      }
+      // If auto-accept failed, redirect to the invite page so user can try manually
+      return NextResponse.redirect(`${appUrl}/invites/accept/${invite}`);
+    }
+
+    // No invite — normal flow
+    if (isNewUser) {
+      return NextResponse.redirect(`${appUrl}/onboarding`);
     }
 
     // Existing user → redirect home

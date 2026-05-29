@@ -381,7 +381,7 @@ class WatchlistService:
 
     async def run_daily_digest_job(self) -> None:
         """Scheduled job: send digest to all eligible users."""
-        logger.info("🕗 Daily digest job triggered")
+        logger.info("Daily digest job triggered")
 
         if not self._db or not self._db.is_configured:
             logger.warning("Daily digest skipped: database not configured")
@@ -441,7 +441,7 @@ class WatchlistService:
             from sendgrid.helpers.mail import Mail
 
             message = Mail(
-                from_email=settings.SENDGRID_FROM_EMAIL,
+                from_email=(settings.SENDGRID_FROM_EMAIL, settings.SENDGRID_FROM_NAME),
                 to_emails=to_email,
                 subject=subject,
                 html_content=html_content,

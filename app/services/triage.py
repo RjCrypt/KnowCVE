@@ -182,8 +182,19 @@ class TriageEngine:
             db = SupabaseService()
             cached = await db.get_explanation(raw.cve_id)
             if cached:
-                logger.info(f"Cache hit for {raw.cve_id} — skipping AI call")
-                explanation = cached
+                # Only accept cache if it has the new Phase 5.5 fields;
+                # old-format explanations are treated as stale and regenerated.
+                has_new_fields = bool(
+                    cached.vulnerability_class_analysis
+                    or cached.attack_techniques
+                )
+                if has_new_fields:
+                    logger.info(f"Cache hit for {raw.cve_id} (Phase 5.5) — skipping AI call")
+                    explanation = cached
+                else:
+                    logger.info(
+                        f"Stale cache for {raw.cve_id} — missing Phase 5.5 fields, regenerating"
+                    )
         except Exception as e:
             logger.debug(f"Cache check failed for {raw.cve_id}: {e}")
 

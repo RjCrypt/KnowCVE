@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     ABUSEIPDB_API_KEY: str = Field(default="", description="AbuseIPDB API key for IOC lookups")
     SENDGRID_API_KEY: str = Field(default="", description="SendGrid API key for email delivery")
     SENDGRID_FROM_EMAIL: str = Field(default="", description="SendGrid sender email address")
+    SENDGRID_FROM_NAME: str = Field(default="KnowCVE", description="SendGrid sender name")
     FRONTEND_URL: str = Field(default="https://know-cve.vercel.app", description="Frontend URL for email links")
 
     # ── Service URLs ──────────────────────────────────────────────────────

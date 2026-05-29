@@ -113,6 +113,9 @@ class NVDClient:
                     break
 
                 vulns = data.get("vulnerabilities", [])
+                if not vulns:
+                    break
+                    
                 for item in vulns:
                     raw = self._parse_vuln(item)
                     if raw and raw.cve_id not in seen:

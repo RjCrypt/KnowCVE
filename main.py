@@ -28,6 +28,10 @@ from app.services.breach_intel import BreachIntelService
 # Phase 7
 from app.services.watchlist_service import WatchlistService
 
+# Phase 8
+from app.services.org_service import OrgService
+from app.api.org_routes import init_org_routes, org_router
+
 from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.triggers.cron import CronTrigger
 
@@ -67,6 +71,9 @@ breach_intel = BreachIntelService()
 
 # Phase 7
 watchlist_service = WatchlistService(db=db_service)
+
+# Phase 8
+org_service = OrgService(db=db_service)
 
 
 # ── Lifespan ──────────────────────────────────────────────────────────────────
@@ -139,7 +146,7 @@ async def lifespan(app: FastAPI):
 
     poller.scheduler.add_job(
         send_daily_briefing,
-        trigger=CronTrigger(hour=8, minute=0),
+        trigger=CronTrigger(hour=8, minute=0, timezone=timezone.utc),
         id="daily_briefing",
         max_instances=1,
     )
@@ -157,12 +164,20 @@ async def lifespan(app: FastAPI):
     # Phase 7 — Daily digest email at 08:00 UTC
     poller.scheduler.add_job(
         watchlist_service.run_daily_digest_job,
-        trigger=CronTrigger(hour=8, minute=0),
+        trigger=CronTrigger(hour=8, minute=0, timezone=timezone.utc),
         id="daily_digest",
         max_instances=1,
     )
 
-    logger.info("✅ KnowCVE ready — Phase 5 threat intelligence + supply chain detection + Phase 7 watchlist active")
+    # Phase 8 — Hourly SLA breach check
+    poller.scheduler.add_job(
+        org_service.check_sla_breaches,
+        trigger=IntervalTrigger(hours=1),
+        id="sla_breach_check",
+        max_instances=1,
+    )
+
+    logger.info("✅ KnowCVE ready — Phase 5 threat intelligence + supply chain detection + Phase 7 watchlist + Phase 8 org workspaces active")
     yield
 
     # Shutdown
@@ -207,8 +222,12 @@ app.include_router(router)
 init_auth_routes(db=db_service, watchlist=watchlist_service)
 app.include_router(auth_router)
 
+# Phase 8 — Org workspaces, assets, triage, MSSP
+init_org_routes(db=db_service, org=org_service)
+app.include_router(org_router)
+
 
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

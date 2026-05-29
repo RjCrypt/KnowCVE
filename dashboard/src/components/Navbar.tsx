@@ -24,6 +24,7 @@ import { useTheme } from "./ThemeProvider";
 import { useAuth } from "@/lib/auth-context";
 import { getHealth, getExposureScore } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import OrgSwitcher from "./OrgSwitcher";
 
 export default function Navbar() {
   const { theme, toggle } = useTheme();
@@ -304,6 +305,9 @@ export default function Navbar() {
               >
                 {exposureScore !== null ? exposureScore : "—"}
               </Link>
+
+              {/* Org Switcher */}
+              <OrgSwitcher />
 
             {/* Avatar dropdown */}
             <div className="relative" ref={avatarRef}>
