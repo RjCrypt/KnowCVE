@@ -15,7 +15,7 @@ from abc import ABC, abstractmethod
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type, retry_if_not_exception_type
 
 from app.core.config import settings
 from app.models.cve import AIExplanation, AttackTechnique, EnrichmentData, RawCVE
@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 # ── Models ────────────────────────────────────────────────────────────────────
 MODEL_GROQ_LARGE = "llama-3.3-70b-versatile"
 MODEL_GROQ_SMALL = "llama-3.1-8b-instant"
-MODEL_CEREBRAS = "llama3.1-8b"
+MODEL_CEREBRAS = "gpt-oss-120b"
 MODEL_GEMINI = "gemini-2.0-flash"
 
 DEFAULT_COOLDOWN_MINUTES = 60
@@ -92,7 +92,23 @@ def _parse_json_response(text: str) -> dict:
     if text.endswith("```"):
         text = text.rsplit("```", 1)[0]
     text = text.strip()
-    return json.loads(text)
+    
+    data = json.loads(text)
+    
+    # Ensure string fields are strings to prevent Pydantic validation errors
+    # if the LLM decides to return them as objects or lists.
+    string_fields = [
+        "summary", "technical_detail", "impact", "remediation",
+        "vulnerability_class_analysis", "adversarial_context", "exploit_narrative"
+    ]
+    for field in string_fields:
+        if field in data and data[field] is not None:
+            if isinstance(data[field], dict):
+                data[field] = "\n".join(f"{k.capitalize()}: {v}" for k, v in data[field].items())
+            elif isinstance(data[field], list):
+                data[field] = "\n".join(f"- {item}" for item in data[field])
+                
+    return data
 
 
 def _parse_cooldown_from_error(error_msg: str) -> int:
@@ -181,7 +197,7 @@ class GroqProvider(BaseExplainer):
     @retry(
         stop=stop_after_attempt(2),
         wait=wait_exponential(multiplier=1, min=2, max=8),
-        retry=retry_if_exception_type(Exception),
+        retry=retry_if_exception_type(Exception) & retry_if_not_exception_type(RateLimitError),
         reraise=True,
     )
     async def generate(
@@ -202,7 +218,7 @@ class GroqProvider(BaseExplainer):
                     {"role": "user", "content": user_content},
                 ],
                 temperature=0.3,
-                max_tokens=2400,
+                max_tokens=4096,
             )
             text = completion.choices[0].message.content or "{}"
             data = _parse_json_response(text)
@@ -230,7 +246,7 @@ class CerebrasProvider(BaseExplainer):
     @retry(
         stop=stop_after_attempt(2),
         wait=wait_exponential(multiplier=1, min=2, max=8),
-        retry=retry_if_exception_type(Exception),
+        retry=retry_if_exception_type(Exception) & retry_if_not_exception_type(RateLimitError),
         reraise=True,
     )
     async def generate(
@@ -246,7 +262,7 @@ class CerebrasProvider(BaseExplainer):
                     {"role": "user", "content": user_content},
                 ],
                 temperature=0.3,
-                max_tokens=2400,
+                max_tokens=4096,
             )
             text = completion.choices[0].message.content or "{}"
             data = _parse_json_response(text)
@@ -274,7 +290,7 @@ class GeminiProvider(BaseExplainer):
     @retry(
         stop=stop_after_attempt(2),
         wait=wait_exponential(multiplier=1, min=2, max=8),
-        retry=retry_if_exception_type(Exception),
+        retry=retry_if_exception_type(Exception) & retry_if_not_exception_type(RateLimitError),
         reraise=True,
     )
     async def generate(
@@ -291,7 +307,7 @@ class GeminiProvider(BaseExplainer):
                 contents=full_prompt,
                 config=types.GenerateContentConfig(
                     temperature=0.3,
-                    max_output_tokens=2400,
+                    max_output_tokens=4096,
                 ),
             )
             text = response.text or "{}"
@@ -340,7 +356,7 @@ class GroqExplainer:
         # Token budget tracking (per-day)
         self._tokens_used_today = 0
         self._budget_date = date.today()
-        self._daily_budget = 180_000
+        self._daily_budget = 500_000
 
     # ── budget helpers ────────────────────────────────────────────────────
 
@@ -378,7 +394,7 @@ class GroqExplainer:
             try:
                 logger.info(f"Explaining {raw.cve_id} via {provider.name}")
                 result = await provider.generate(raw, enrichment, priority_label)
-                self._tokens_used_today += 2000  # estimate (Phase 5.5 expanded output)
+                self._tokens_used_today += 4000  # estimate (Phase 5.5 expanded output)
                 return result
             except RateLimitError as e:
                 logger.warning(f"{provider.name} rate-limited for {raw.cve_id}: {e}")
@@ -396,15 +412,7 @@ class GroqExplainer:
 
         # All providers failed
         logger.warning(f"All AI providers failed for {raw.cve_id}: {last_error}")
-        return AIExplanation(
-            summary=f"{raw.cve_id}: {raw.description[:200]}. "
-            "AI explanation unavailable — all providers exhausted.",
-            technical_detail="All AI providers are currently rate-limited or unavailable.",
-            impact=f"CVSS: {raw.cvss_score}. Check NVD for full details.",
-            remediation=f"Visit https://nvd.nist.gov/vuln/detail/{raw.cve_id}",
-            tags=[],
-            affected_tech=[],
-        )
+        return self.generate_lightweight_explanation(raw, enrichment)
 
     # ── fallback explanations ─────────────────────────────────────────────
 

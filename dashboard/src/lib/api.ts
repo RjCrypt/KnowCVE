@@ -34,7 +34,18 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
     },
   });
   if (!res.ok) {
-    throw new Error(`API ${res.status}: ${res.statusText}`);
+    let errorMsg = `API ${res.status}: ${res.statusText}`;
+    try {
+      const errBody = await res.json();
+      if (errBody && errBody.detail) {
+        errorMsg = typeof errBody.detail === "string" ? errBody.detail : JSON.stringify(errBody.detail);
+      } else if (errBody && errBody.error) {
+        errorMsg = errBody.error;
+      }
+    } catch (e) {
+      // Ignore JSON parse errors for non-JSON responses
+    }
+    throw new Error(errorMsg);
   }
   return res.json() as Promise<T>;
 }
@@ -380,4 +391,294 @@ export async function sendTestDigest(userId: string): Promise<{ sent: boolean }>
   return apiFetch<{ sent: boolean }>(`/api/digest/test/${userId}`, {
     method: 'POST',
   });
+}
+
+/* ── Phase 8 — Org, Assets, Triage, MSSP ─────── */
+
+import type {
+  Organization,
+  OrgMember,
+  OrgInvite,
+  Asset,
+  TriageItem,
+  TriageActivity,
+  SLAConfig,
+  OrgClient,
+  OrgExposureScore,
+  ComplianceSnapshot,
+  ClientSummary,
+} from "@/types/cve";
+
+// ── Org CRUD ──
+
+export async function createOrg(params: {
+  name: string;
+  org_type: string;
+  owner_id: string;
+}): Promise<Organization> {
+  return apiFetch<Organization>('/api/orgs', {
+    method: 'POST',
+    body: JSON.stringify(params),
+  });
+}
+
+export async function getOrg(orgId: string, userId: string): Promise<Organization> {
+  return apiFetch<Organization>(`/api/orgs/${orgId}?user_id=${userId}`);
+}
+
+export async function updateOrg(orgId: string, userId: string, name: string): Promise<Organization> {
+  return apiFetch<Organization>(`/api/orgs/${orgId}?user_id=${userId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ name }),
+  });
+}
+
+export async function getUserOrgs(userId: string): Promise<{ data: Organization[]; total: number }> {
+  return apiFetch<{ data: Organization[]; total: number }>(`/api/orgs/user/${userId}`);
+}
+
+// ── Members ──
+
+export async function inviteMember(orgId: string, userId: string, params: {
+  email: string;
+  role: string;
+  inviter_name?: string;
+}): Promise<{ token: string; email: string; expires_at: string }> {
+  return apiFetch(`/api/orgs/${orgId}/members/invite?user_id=${userId}`, {
+    method: 'POST',
+    body: JSON.stringify(params),
+  });
+}
+
+export async function listMembers(orgId: string, userId: string): Promise<{ data: OrgMember[]; total: number }> {
+  return apiFetch(`/api/orgs/${orgId}/members?user_id=${userId}`);
+}
+
+export async function updateMemberRole(orgId: string, targetUserId: string, userId: string, role: string): Promise<{ status: string }> {
+  return apiFetch(`/api/orgs/${orgId}/members/${targetUserId}?user_id=${userId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ role }),
+  });
+}
+
+export async function removeMember(orgId: string, targetUserId: string, userId: string): Promise<{ status: string }> {
+  return apiFetch(`/api/orgs/${orgId}/members/${targetUserId}?user_id=${userId}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function acceptInvite(token: string, userId?: string): Promise<{
+  org_id?: string;
+  org_name?: string;
+  requires_signup?: boolean;
+  email?: string;
+}> {
+  const sp = new URLSearchParams();
+  if (userId) sp.set("user_id", userId);
+  const qs = sp.toString();
+  return apiFetch(`/api/invites/accept/${token}${qs ? `?${qs}` : ""}`);
+}
+
+export async function listInvites(orgId: string, userId: string): Promise<{ data: OrgInvite[]; total: number }> {
+  return apiFetch(`/api/orgs/${orgId}/invites?user_id=${userId}`);
+}
+
+export async function revokeInvite(orgId: string, inviteId: string, userId: string): Promise<{ status: string }> {
+  return apiFetch(`/api/orgs/${orgId}/invites/${inviteId}?user_id=${userId}`, {
+    method: 'DELETE',
+  });
+}
+
+// ── Assets ──
+
+export async function listAssets(orgId: string, userId: string, clientId?: string): Promise<{
+  data: Asset[];
+  total: number;
+  asset_count: number;
+  asset_limit: number;
+}> {
+  const sp = new URLSearchParams({ user_id: userId });
+  if (clientId) sp.set("client_id", clientId);
+  return apiFetch(`/api/orgs/${orgId}/assets?${sp.toString()}`);
+}
+
+export async function addAsset(orgId: string, userId: string, params: {
+  display_name: string;
+  cpe_string: string;
+  criticality?: string;
+  owner_name?: string;
+  notes?: string;
+  client_id?: string;
+}): Promise<Asset> {
+  return apiFetch(`/api/orgs/${orgId}/assets?user_id=${userId}`, {
+    method: 'POST',
+    body: JSON.stringify(params),
+  });
+}
+
+export async function updateAsset(orgId: string, assetId: string, userId: string, params: {
+  display_name?: string;
+  cpe_string?: string;
+  criticality?: string;
+  owner_name?: string;
+  notes?: string;
+}): Promise<Asset> {
+  return apiFetch(`/api/orgs/${orgId}/assets/${assetId}?user_id=${userId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(params),
+  });
+}
+
+export async function deleteAsset(orgId: string, assetId: string, userId: string): Promise<{ status: string }> {
+  return apiFetch(`/api/orgs/${orgId}/assets/${assetId}?user_id=${userId}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function getAssetCVEs(orgId: string, userId: string, params?: {
+  page?: number;
+  page_size?: number;
+  client_id?: string;
+}): Promise<{ cves: ProcessedCVE[]; total: number; page: number }> {
+  const sp = new URLSearchParams({ user_id: userId });
+  if (params?.page) sp.set("page", String(params.page));
+  if (params?.page_size) sp.set("page_size", String(params.page_size));
+  if (params?.client_id) sp.set("client_id", params.client_id);
+  return apiFetch(`/api/orgs/${orgId}/assets/cves?${sp.toString()}`);
+}
+
+// ── Triage ──
+
+export async function listTriageItems(orgId: string, userId: string, params?: {
+  status?: string;
+  client_id?: string;
+  assignee_id?: string;
+  severity?: string;
+  overdue_only?: boolean;
+}): Promise<{ data: TriageItem[]; total: number }> {
+  const sp = new URLSearchParams({ user_id: userId });
+  if (params?.status) sp.set("status", params.status);
+  if (params?.client_id) sp.set("client_id", params.client_id);
+  if (params?.assignee_id) sp.set("assignee_id", params.assignee_id);
+  if (params?.severity) sp.set("severity", params.severity);
+  if (params?.overdue_only) sp.set("overdue_only", "true");
+  return apiFetch(`/api/orgs/${orgId}/triage?${sp.toString()}`);
+}
+
+export async function createTriageItem(orgId: string, userId: string, params: {
+  cve_id: string;
+  client_id?: string;
+  notes?: string;
+}): Promise<TriageItem> {
+  return apiFetch(`/api/orgs/${orgId}/triage?user_id=${userId}`, {
+    method: 'POST',
+    body: JSON.stringify(params),
+  });
+}
+
+export async function updateTriageItem(orgId: string, itemId: string, userId: string, params: {
+  status?: string;
+  assignee_id?: string;
+  notes?: string;
+}): Promise<TriageItem> {
+  return apiFetch(`/api/orgs/${orgId}/triage/${itemId}?user_id=${userId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ ...params, user_id: userId }),
+  });
+}
+
+export async function deleteTriageItem(orgId: string, itemId: string, userId: string): Promise<{ status: string }> {
+  return apiFetch(`/api/orgs/${orgId}/triage/${itemId}?user_id=${userId}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function getTriageActivity(orgId: string, itemId: string, userId: string): Promise<{ data: TriageActivity[] }> {
+  return apiFetch(`/api/orgs/${orgId}/triage/${itemId}/activity?user_id=${userId}`);
+}
+
+export async function autoPopulateTriage(orgId: string, userId: string, clientId?: string): Promise<{ status: string; items_added: number }> {
+  const sp = new URLSearchParams({ user_id: userId });
+  if (clientId) sp.set("client_id", clientId);
+  return apiFetch(`/api/orgs/${orgId}/triage/auto-populate?${sp.toString()}`, {
+    method: 'POST',
+  });
+}
+
+// ── SLA ──
+
+export async function getSLAConfig(orgId: string, userId: string): Promise<{ data: SLAConfig[] }> {
+  return apiFetch(`/api/orgs/${orgId}/sla?user_id=${userId}`);
+}
+
+export async function upsertSLAConfig(orgId: string, userId: string, config: {
+  CRITICAL: number;
+  HIGH: number;
+  MEDIUM: number;
+  LOW: number;
+}): Promise<{ status: string }> {
+  return apiFetch(`/api/orgs/${orgId}/sla?user_id=${userId}`, {
+    method: 'POST',
+    body: JSON.stringify(config),
+  });
+}
+
+// ── MSSP Clients ──
+
+export async function listClients(orgId: string, userId: string): Promise<{ data: OrgClient[]; total: number }> {
+  return apiFetch(`/api/orgs/${orgId}/clients?user_id=${userId}`);
+}
+
+export async function createClient(orgId: string, userId: string, params: {
+  name: string;
+  contact_name?: string;
+  contact_email?: string;
+}): Promise<OrgClient> {
+  return apiFetch(`/api/orgs/${orgId}/clients?user_id=${userId}`, {
+    method: 'POST',
+    body: JSON.stringify(params),
+  });
+}
+
+export async function updateClient(orgId: string, clientId: string, userId: string, params: {
+  name?: string;
+  contact_name?: string;
+  contact_email?: string;
+}): Promise<OrgClient> {
+  return apiFetch(`/api/orgs/${orgId}/clients/${clientId}?user_id=${userId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(params),
+  });
+}
+
+export async function deleteClient(orgId: string, clientId: string, userId: string): Promise<{ status: string }> {
+  return apiFetch(`/api/orgs/${orgId}/clients/${clientId}?user_id=${userId}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function getClientSummary(orgId: string, clientId: string, userId: string): Promise<ClientSummary> {
+  return apiFetch(`/api/orgs/${orgId}/clients/${clientId}/summary?user_id=${userId}`);
+}
+
+// ── Org Exposure & Compliance ──
+
+export async function getOrgExposure(orgId: string, userId: string): Promise<OrgExposureScore> {
+  return apiFetch(`/api/orgs/${orgId}/exposure?user_id=${userId}`);
+}
+
+export async function recalculateOrgExposure(orgId: string, userId: string): Promise<{ status: string; scores: OrgExposureScore[] }> {
+  return apiFetch(`/api/orgs/${orgId}/exposure/recalculate?user_id=${userId}`, {
+    method: 'POST',
+  });
+}
+
+export async function getComplianceData(orgId: string, userId: string, params?: {
+  days?: number;
+  client_id?: string;
+}): Promise<ComplianceSnapshot> {
+  const sp = new URLSearchParams({ user_id: userId });
+  if (params?.days) sp.set("days", String(params.days));
+  if (params?.client_id) sp.set("client_id", params.client_id);
+  return apiFetch(`/api/orgs/${orgId}/compliance?${sp.toString()}`);
 }

@@ -18,10 +18,14 @@ export default function LoginPage() {
       // Dynamically get the current domain (works flawlessly on Vercel previews and production)
       const appUrl = typeof window !== "undefined" ? window.location.origin : (process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000");
       
+      // Preserve invite token through the OAuth redirect cycle
+      const invite = searchParams.get("invite");
+      const callbackUrl = `${appUrl}/auth/callback${invite ? `?invite=${invite}` : ""}`;
+
       await supabase.auth.signInWithOAuth({
         provider,
         options: {
-          redirectTo: `${appUrl}/auth/callback`,
+          redirectTo: callbackUrl,
         },
       });
     } catch (err) {

@@ -3,6 +3,7 @@ import { Syne, DM_Sans, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import { ThemeProvider } from "@/components/ThemeProvider";
 import { AuthProvider } from "@/lib/auth-context";
+import { OrgProvider } from "@/lib/org-context";
 import Navbar from "@/components/Navbar";
 
 const syne = Syne({
@@ -43,8 +44,10 @@ export default function RootLayout({
       <body className="flex min-h-screen flex-col">
         <ThemeProvider>
           <AuthProvider>
-            <Navbar />
-            <main className="flex-1">{children}</main>
+            <OrgProvider>
+              <Navbar />
+              <main className="flex-1">{children}</main>
+            </OrgProvider>
           </AuthProvider>
         </ThemeProvider>
       </body>

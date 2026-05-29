@@ -338,3 +338,159 @@ export interface ExposureScore {
   calculated_at: string;
 }
 
+// ── Phase 8: Org, Asset, Triage, MSSP Types ─────────────────────────────────
+
+export type OrgType = 'team' | 'mssp';
+export type OrgRole = 'owner' | 'admin' | 'member' | 'viewer';
+export type TriageStatus = 'new' | 'investigating' | 'remediation_planned' | 'mitigated' | 'wont_fix';
+
+export interface Organization {
+  id: string;
+  name: string;
+  org_type: OrgType;
+  owner_id: string;
+  created_at: string;
+  updated_at: string;
+  // Enriched by backend
+  user_role?: OrgRole;
+  members?: OrgMember[];
+  member_count?: number;
+  asset_count?: number;
+  plan_limits?: { assets: number; members: number };
+}
+
+export interface OrgMember {
+  id: string;
+  org_id: string;
+  user_id: string;
+  member_role: OrgRole;
+  joined_at: string;
+  // Enriched from user_profiles
+  email?: string;
+  display_name?: string;
+  avatar_url?: string;
+}
+
+export interface OrgInvite {
+  id: string;
+  org_id: string;
+  email: string;
+  role: OrgRole;
+  token: string;
+  expires_at: string;
+  accepted: boolean;
+  created_at: string;
+}
+
+export interface Asset {
+  id: string;
+  org_id: string;
+  display_name: string;
+  cpe_string: string;
+  criticality: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW';
+  owner_name: string;
+  notes: string;
+  client_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TriageItem {
+  id: string;
+  org_id: string;
+  cve_id: string;
+  client_id: string | null;
+  status: TriageStatus;
+  assignee_id: string | null;
+  notes: string;
+  sla_hours: number;
+  sla_started_at: string | null;
+  sla_due_at: string | null;
+  created_at: string;
+  updated_at: string;
+  // Enriched by backend
+  cve_data?: {
+    description: string;
+    priority_score: number;
+    priority_label: string;
+    cvss_score: number;
+    in_kev: boolean;
+    ai_summary: string;
+  } | null;
+  is_overdue?: boolean;
+  assignee_name?: string;
+  assignee_avatar?: string;
+  matched_assets?: string[];
+}
+
+export interface TriageActivity {
+  id: string;
+  triage_item_id: string;
+  user_id: string | null;
+  action: string;
+  detail: string;
+  created_at: string;
+}
+
+export interface SLAConfig {
+  priority: string;
+  sla_hours: number;
+  org_id?: string;
+}
+
+export interface OrgClient {
+  id: string;
+  org_id: string;
+  name: string;
+  contact_name: string;
+  contact_email: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface OrgExposureScore {
+  score: number;
+  critical_count: number;
+  high_count: number;
+  actively_exploited_count: number;
+  top_cves: Array<{
+    cve_id: string;
+    priority_score: number;
+    priority_label: string;
+    description: string;
+    in_kev: boolean;
+    matched_assets?: string[];
+  }>;
+  calculated_at: string;
+  client_id?: string | null;
+}
+
+export interface ComplianceSnapshot {
+  cves: Array<{
+    cve_id: string;
+    severity: string;
+    in_kev: boolean;
+    first_detected: string;
+    triage_status: TriageStatus;
+    days_to_remediate: number | null;
+    matched_assets: string[];
+  }>;
+  stats: {
+    total_cves: number;
+    critical_high_count: number;
+    kev_count: number;
+    mitigated_count: number;
+    remediation_rate: number;
+    sla_compliance_rate: number;
+    avg_remediation_days: number;
+  };
+  date_range: { days: number; from: string };
+}
+
+export interface ClientSummary {
+  client_id: string;
+  exposure_score: number;
+  open_triage: number;
+  overdue_count: number;
+}
+

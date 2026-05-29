@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import {
   LayoutDashboard,
   Bookmark,
@@ -22,6 +23,8 @@ import {
 import { useAuth } from "@/lib/auth-context";
 import { cn, priorityColor, formatDateRelative } from "@/lib/utils";
 import Footer from "@/components/layout/Footer";
+import CreateOrgModal from "@/components/CreateOrgModal";
+import { OrgProvider } from "@/lib/org-context";
 import type { WatchlistItem, ExposureScore, ProcessedCVE } from "@/types/cve";
 import {
   getWatchlist,
@@ -80,6 +83,16 @@ export default function WorkspacePage() {
   const [newCriticality, setNewCriticality] = useState("MEDIUM");
   const [addError, setAddError] = useState("");
   const [adding, setAdding] = useState(false);
+  const [showCreateOrg, setShowCreateOrg] = useState(false);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get("create_org") === "1") {
+        setShowCreateOrg(true);
+      }
+    }
+  }, []);
 
   /* ── Tech context suggestion ───────────── */
   const [showSuggestions, setShowSuggestions] = useState(true);
@@ -225,6 +238,32 @@ export default function WorkspacePage() {
               ? `Welcome back, ${profile.display_name}`
               : "Your personal vulnerability dashboard"}
           </p>
+        </div>
+      </div>
+
+      {/* Phase 8: Org Upgrade CTA */}
+      <div className="card p-4 mb-6 border-purple-500/20 bg-gradient-to-r from-purple-500/5 to-acid/5 animate-fade-in">
+        <div className="flex items-center justify-between gap-4 flex-wrap">
+          <div className="flex items-center gap-3">
+            <div className="p-2 rounded-lg bg-purple-500/10 border border-purple-500/20">
+              <Shield className="h-5 w-5 text-purple-400" />
+            </div>
+            <div>
+              <p className="text-sm font-medium text-l-text dark:text-gray-200">
+                Upgrade to Team or MSSP workspace
+              </p>
+              <p className="text-xs text-l-sub dark:text-gray-500">
+                Shared asset registers, CVE triage boards, SLA tracking, and compliance reports.
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={() => setShowCreateOrg(true)}
+            className="btn-primary text-xs flex items-center gap-1.5 shrink-0"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            Create Org Workspace
+          </button>
         </div>
       </div>
 
@@ -589,6 +628,7 @@ export default function WorkspacePage() {
 
       <div className="mt-12" />
       <Footer />
+      <CreateOrgModal open={showCreateOrg} onClose={() => setShowCreateOrg(false)} />
     </div>
   );
 }
